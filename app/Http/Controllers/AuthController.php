@@ -22,30 +22,22 @@ class AuthController extends Controller
     }
 
     // 2. Handle the user coming back from Google
+    // 2. Handle the user coming back from Google
     public function callback()
     {
         try {
             // Get the user details from Google
             $googleUser = Socialite::driver('google')->user();
 
-            // Get the tokens
-            $token = $googleUser->token;
-            $refreshToken = $googleUser->refreshToken;
-            $expiresIn = $googleUser->expiresIn;
+            // This fills the 'token' column we created in the migration
+            $user = Auth::user();
 
-            // Save to our Database
-            OAuthToken::updateOrCreate(
-                [
-                    'user_id' => Auth::id(),
-                    'provider' => 'google'
-                ],
-                [
-                    'company_id' => Auth::user()->company_id,
-                    'access_token' => $token,
-                    'refresh_token' => $refreshToken,
-                    'expires_at' => now()->addSeconds($expiresIn),
-                ]
-            );
+            $user->update([
+                'google_id' => $googleUser->id,
+                'token' => $googleUser->token, // This saves the Access Token to your new column
+                // If you added a refresh_token column to users table, save it here too:
+                // 'refresh_token' => $googleUser->refreshToken,
+            ]);
 
             return redirect()->route('dashboard')->with('success', 'Google Workspace Connected!');
 

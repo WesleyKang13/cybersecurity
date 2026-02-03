@@ -17,33 +17,21 @@ class GmailService
         $this->client->setClientId(config('services.google.client_id'));
         $this->client->setClientSecret(config('services.google.client_secret'));
 
-        // Load the token from our database
-        $tokenRecord = $user->token;
+        // FIX: The token is now a simple string on the User model
+        // We do NOT need to look up a separate database record anymore.
+        $accessToken = $user->token;
 
-        if (!$tokenRecord) {
-            throw new \Exception("User is not connected to Gmail.");
+        if (!$accessToken) {
+            throw new \Exception("User {$user->id} has no Google token.");
         }
 
-        // Set the access token
+        // format the array exactly how Google Client expects it
         $this->client->setAccessToken([
-            'access_token' => $tokenRecord->access_token,
-            'refresh_token' => $tokenRecord->refresh_token,
-            'expires_in' => $tokenRecord->expires_at->diffInSeconds(now(), true),
-            'created' => $tokenRecord->updated_at->timestamp,
+            'access_token'  => $accessToken,
+            'refresh_token' => null,   // We aren't using refresh tokens yet
+            'expires_in'    => 3600,   // Default to 1 hour
+            'created'       => time(), // Assume it's valid now
         ]);
-
-        // Auto-refresh if expired
-        if ($this->client->isAccessTokenExpired()) {
-            if ($this->client->getRefreshToken()) {
-                $newToken = $this->client->fetchAccessTokenWithRefreshToken($this->client->getRefreshToken());
-
-                // Save new token to DB so we stay logged in
-                $tokenRecord->update([
-                    'access_token' => $newToken['access_token'],
-                    'expires_at' => now()->addSeconds($newToken['expires_in']),
-                ]);
-            }
-        }
     }
 
     /**

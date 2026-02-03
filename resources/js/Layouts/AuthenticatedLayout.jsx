@@ -17,9 +17,14 @@ export default function AuthenticatedLayout({ header, children }) {
                 <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
                     <div className="flex h-16 justify-between">
                         <div className="flex">
-                            <div className="flex shrink-0 items-center">
+                            <div className="shrink-0 flex items-start">
                                 <Link href="/">
-                                    <ApplicationLogo className="block h-9 w-auto fill-current text-gray-800" />
+                                    {/* 🟢 UPDATED: Direct Image tag with size and rounded corners */}
+                                    <img
+                                        src="/images/logo.png"
+                                        alt="Futuristic"
+                                        className="block h-16 w-auto rounded-lg transition hover:scale-105"
+                                    />
                                 </Link>
                             </div>
 
@@ -29,6 +34,10 @@ export default function AuthenticatedLayout({ header, children }) {
                                     active={route().current('dashboard')}
                                 >
                                     Dashboard
+                                </NavLink>
+
+                                <NavLink href={route('sms.index')} active={route().current('sms.index')}>
+                                    SMS Detect
                                 </NavLink>
                             </div>
                         </div>

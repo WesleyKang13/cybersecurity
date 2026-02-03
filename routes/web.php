@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\DashboardController;
 use App\Models\ScannedEmail;
 use App\Models\User;
 use App\Services\GmailService;
@@ -19,56 +20,15 @@ Route::get('/', function () {
     ]);
 });
 
-Route::get('/dashboard', function () {
-    /** @var \App\Models\User $user */
-    $user = Auth::user();
+Route::middleware(['auth', 'verified'])->group(function () {
+    Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
+    Route::post('/auth/disconnect', [DashboardController::class, 'disconnect'])->name('google.disconnect');
 
-    // 1. Check connection
-    $isConnected = $user->relationLoaded('token') ? !is_null($user->token) : $user->token()->exists();
+    Route::get('/sms-scanner', function () {
+        return Inertia::render('SmsScanner');
+    })->name('sms.index');
+});
 
-    $stats = [
-        'scanned' => 0,
-        'threats' => 0,
-        'protected' => 0
-    ];
-
-    // 2. Fetch real stats if connected
-    if ($isConnected) {
-        try {
-            // Count "Scanned" from our local DB (or Google if you prefer)
-            $stats['scanned'] = ScannedEmail::where('user_id', $user->id)->count();
-            $stats['threats'] = ScannedEmail::where('user_id', $user->id)->where('is_threat', true)->count();
-            $stats['protected'] = 1;
-        } catch (\Exception $e) {
-            // connection error logic
-        }
-    }
-
-    // 3. Fetch the Recent Alerts (Last 5 emails)
-    $recentAlerts = ScannedEmail::where('user_id', $user->id)
-        ->latest()
-        ->take(10) // Let's show 10 now
-        ->get()
-        ->map(function ($email) {
-            return [
-                'id' => $email->id,
-                'severity' => $email->severity,
-                'subject' => $email->subject,
-                'sender' => $email->sender,
-                'snippet' => $email->snippet,
-                'risk_score' => $email->risk_score,
-                'reason' => $email->reason,
-                'recipient' => 'You',
-                'date' => $email->created_at->diffForHumans(),
-            ];
-        });
-
-    return Inertia::render('Dashboard', [
-        'initialStats' => $stats,
-        'isConnected' => $isConnected,
-        'recentAlerts' => $recentAlerts, // 👈 Passing the list to React
-    ]);
-})->middleware(['auth', 'verified'])->name('dashboard');
 
 Route::middleware('auth')->group(function () {
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
