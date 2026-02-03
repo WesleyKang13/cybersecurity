@@ -43,6 +43,18 @@ export default function AuthenticatedLayout({ header, children }) {
                         </div>
 
                         <div className="hidden sm:ms-6 sm:flex sm:items-center">
+                            {user.role === 'admin' && (
+                                <Link
+                                    href={route('admin.dashboard')}
+                                    className={`mr-4 text-sm font-medium transition duration-150 ease-in-out ${
+                                        route().current('admin.dashboard')
+                                            ? 'text-indigo-600 border-b-2 border-indigo-600' // Active State
+                                            : 'text-gray-500 hover:text-gray-700'            // Inactive State
+                                    }`}
+                                >
+                                    Admin Dashboard
+                                </Link>
+                            )}
                             <div className="relative ms-3">
                                 <Dropdown>
                                     <Dropdown.Trigger>

@@ -5,12 +5,14 @@ import { ShieldAlert, ShieldCheck, Mail, AlertTriangle } from 'lucide-react';
 
 export default function ThreatDetailModal({ show, onClose, email }) {
     // Safety check for empty data
-    const safeEmail = email || {
+    // Merge defaults with incoming data
+    const safeEmail = {
         subject: 'Loading...',
-        sender: '...',
+        sender: 'Unknown Sender',
         severity: 'clean',
-        snippet: '...',
-        reason: '...'
+        snippet: 'No content available for this email.', // Default text
+        reason: 'No analysis provided.',
+        ...email // Overwrite defaults with actual data if it exists
     };
 
     return (
@@ -84,11 +86,6 @@ export default function ThreatDetailModal({ show, onClose, email }) {
                     <SecondaryButton onClick={onClose}>
                         Close
                     </SecondaryButton>
-                    {safeEmail.severity === 'high' && (
-                        <DangerButton onClick={() => alert('Delete feature coming soon!')}>
-                            Delete Email
-                        </DangerButton>
-                    )}
                 </div>
             </div>
         </Modal>

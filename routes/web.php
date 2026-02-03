@@ -3,6 +3,8 @@
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\SmsController;
+use App\Http\Controllers\AdminDashboardController;
 use App\Models\ScannedEmail;
 use App\Models\User;
 use App\Services\GmailService;
@@ -24,9 +26,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
     Route::post('/auth/disconnect', [DashboardController::class, 'disconnect'])->name('google.disconnect');
 
-    Route::get('/sms-scanner', function () {
-        return Inertia::render('SmsScanner');
-    })->name('sms.index');
+    Route::get('/sms-scanner', [SmsController::class, 'index'])->name('sms.index');
+    Route::post('/sms-analyze', [SmsController::class, 'analyze'])->name('sms.analyze');
+
+    Route::middleware(['auth', 'verified'])->group(function () {
+    Route::get('/admin/dashboard', [AdminDashboardController::class, 'index'])
+            ->name('admin.dashboard');
+    });
 });
 
 

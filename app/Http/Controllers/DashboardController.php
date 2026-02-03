@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use App\Models\ScannedEmail;
+use App\Models\ScannedSms;
 use Inertia\Inertia;
 
 class DashboardController extends Controller
@@ -14,67 +15,82 @@ class DashboardController extends Controller
         /** @var \App\Models\User $user */
         $user = Auth::user();
         $isConnected = !empty($user->token);
-
-        // Get the filter from the URL (?filter=threats)
         $filter = $request->input('filter', 'all');
 
+        // 1. Calculate Stats
+        $emailCount = $isConnected ? ScannedEmail::where('user_id', $user->id)->count() : 0;
+        $smsCount = ScannedSms::where('user_id', $user->id)->count();
+
+        $emailThreats = $isConnected ? ScannedEmail::where('user_id', $user->id)->where('is_threat', true)->count() : 0;
+        $smsThreats = ScannedSms::where('user_id', $user->id)->where('is_threat', true)->count();
+
         $stats = [
-            'scanned' => 0,
-            'threats' => 0,
-            'protected' => 0
+            'emails_scanned' => $emailCount,
+            'sms_scanned' => $smsCount,
+            'threats' => $emailThreats + $smsThreats,
+            'protected' => 1
         ];
 
-        $recentAlerts = [];
+        // 2. Build the Combined Feed
+        $feed = collect([]);
 
+        // Add Emails
         if ($isConnected) {
-            // 1. Always calculate total stats (regardless of filter)
-            $stats['scanned'] = ScannedEmail::where('user_id', $user->id)->count();
-            $stats['threats'] = ScannedEmail::where('user_id', $user->id)->where('is_threat', true)->count();
-            $stats['protected'] = 1;
-
-            // 2. Query for the list (Respecting the filter)
-            $query = ScannedEmail::where('user_id', $user->id);
-
-            if ($filter === 'threats') {
-                $query->where('is_threat', true);
-            }
-
-            $recentAlerts = $query->latest()
-                ->take(20)
-                ->get()
-                ->map(function ($email) {
-                    return [
-                        'id' => $email->id,
-                        'severity' => $email->severity,
-                        'subject' => $email->subject,
-                        'sender' => $email->sender,
-                        'snippet' => $email->snippet,
-                        'risk_score' => $email->risk_score,
-                        'reason' => $email->reason,
-                        'is_threat' => $email->is_threat,
-                        'date' => $email->created_at->diffForHumans(),
-                    ];
-                });
+            $emails = ScannedEmail::where('user_id', $user->id)->latest()->take(20)->get();
+            $feed = $feed->concat($emails->map(fn($e) => [
+                'id' => 'email_'.$e->id,
+                'source' => 'email',
+                'subject' => $e->subject,
+                'sender' => $e->sender,
+                'is_threat' => $e->is_threat,
+                'severity' => $e->severity,
+                'risk_score' => $e->risk_score,
+                'date_obj' => $e->created_at,
+                'date' => $e->created_at->diffForHumans(),
+                'snippet' => $e->snippet,
+                'reason' => $e->reason ?? $e->explanation ?? 'Analysis pending...',
+            ]));
         }
+
+        // Add SMS
+        $sms = ScannedSms::where('user_id', $user->id)->latest()->take(20)->get();
+        $feed = $feed->concat($sms->map(fn($s) => [
+            'id' => 'sms_'.$s->id,
+            'source' => 'sms',
+            'subject' => \Illuminate\Support\Str::limit($s->content, 40),
+            'sender' => 'Text Message',
+            'is_threat' => $s->is_threat,
+            'severity' => $s->risk_score > 70 ? 'high' : ($s->risk_score > 40 ? 'medium' : 'low'),
+            'risk_score' => $s->risk_score,
+            'date_obj' => $s->created_at,
+            'date' => $s->created_at->diffForHumans(),
+            // 🟢 ADDED THIS LINE (Mapping explanation to reason):
+            'reason' => $s->explanation ?? 'Analysis pending...',
+        ]));
+
+        // 3. Filter & Sort
+        if ($filter === 'threats') {
+            $feed = $feed->where('is_threat', true);
+        } else if ($filter === 'email') {
+            $feed = $feed->where('source', 'email');
+        } else if ($filter === 'sms') {
+            $feed = $feed->where('source', 'sms');
+        }
+
+        $recentAlerts = $feed->sortByDesc('date_obj')->values()->take(20);
 
         return Inertia::render('Dashboard', [
             'initialStats' => $stats,
             'isConnected' => $isConnected,
             'recentAlerts' => $recentAlerts,
-            'filter' => $filter, // Pass the active filter to UI
+            'filter' => $filter,
         ]);
     }
 
-    // New: Handle Disconnect
     public function disconnect()
     {
         $user = Auth::user();
-        $user->update([
-            'token' => null,
-            'google_id' => null,
-            // 'refresh_token' => null // uncomment if you use this
-        ]);
-
+        $user->update(['token' => null, 'google_id' => null]);
         return redirect()->route('dashboard')->with('success', 'Disconnected successfully.');
     }
 }

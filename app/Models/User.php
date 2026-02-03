@@ -66,4 +66,8 @@ class User extends Authenticatable
     {
         return $this->role === 'admin';
     }
+    public function scannedEmails()
+    {
+        return $this->hasMany(ScannedEmail::class);
+    }
 }
