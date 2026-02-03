@@ -21,6 +21,8 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'company_id',
+        'role',
     ];
 
     /**
@@ -44,5 +46,23 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
         ];
+    }
+
+    // A user belongs to one company
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    // A user might have a connected Gmail token
+    public function token()
+    {
+        return $this->hasOne(OAuthToken::class);
+    }
+
+    // Helper: Check if user is an Admin
+    public function isAdmin(): bool
+    {
+        return $this->role === 'admin';
     }
 }
