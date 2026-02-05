@@ -38,8 +38,11 @@ class ScanAllUsers extends Command
 
         // 2. Loop through each user and trigger the Job
         foreach ($users as $user) {
-            ScanGmailJob::dispatch($user);
-            $this->info(" -> Dispatched scan for: {$user->name}");
+            if($user->token !== null){
+                ScanGmailJob::dispatch($user);
+                $this->info(" -> Dispatched scan for: {$user->name}");
+            }
+
         }
 
         $this->info('All jobs dispatched successfully!');
