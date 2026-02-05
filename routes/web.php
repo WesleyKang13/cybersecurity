@@ -29,10 +29,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('/sms-scanner', [SmsController::class, 'index'])->name('sms.index');
     Route::post('/sms-analyze', [SmsController::class, 'analyze'])->name('sms.analyze');
 
-    Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('/admin/dashboard', [AdminDashboardController::class, 'index'])
             ->name('admin.dashboard');
-    });
+    Route::post('/admin/users', [AdminDashboardController::class, 'storeUser'])->name('admin.users.store');
 });
 
 

@@ -14,12 +14,12 @@ export default function AuthenticatedLayout({ header, children }) {
     return (
         <div className="min-h-screen bg-gray-100">
             <nav className="border-b border-gray-100 bg-white">
-                <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+                {/* 👇 CHANGED: max-w-7xl -> max-w-full */}
+                <div className="mx-auto max-w-full px-4 sm:px-6 lg:px-8">
                     <div className="flex h-16 justify-between">
                         <div className="flex">
                             <div className="shrink-0 flex items-start">
                                 <Link href="/">
-                                    {/* 🟢 UPDATED: Direct Image tag with size and rounded corners */}
                                     <img
                                         src="/images/logo.png"
                                         alt="Futuristic"
@@ -48,8 +48,8 @@ export default function AuthenticatedLayout({ header, children }) {
                                     href={route('admin.dashboard')}
                                     className={`mr-4 text-sm font-medium transition duration-150 ease-in-out ${
                                         route().current('admin.dashboard')
-                                            ? 'text-indigo-600 border-b-2 border-indigo-600' // Active State
-                                            : 'text-gray-500 hover:text-gray-700'            // Inactive State
+                                            ? 'text-indigo-600 border-b-2 border-indigo-600'
+                                            : 'text-gray-500 hover:text-gray-700'
                                     }`}
                                 >
                                     Admin Dashboard
@@ -185,7 +185,8 @@ export default function AuthenticatedLayout({ header, children }) {
 
             {header && (
                 <header className="bg-white shadow">
-                    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+                    {/* 👇 CHANGED: max-w-7xl -> max-w-full */}
+                    <div className="mx-auto max-w-full px-4 py-6 sm:px-6 lg:px-8">
                         {header}
                     </div>
                 </header>

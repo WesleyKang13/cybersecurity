@@ -1,10 +1,12 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Head } from '@inertiajs/react';
 import { useState } from 'react';
-import axios from 'axios'; // 🟢 ADDED: Import axios explicitly
-import { ShieldAlert, CheckCircle, Search, Smartphone, AlertTriangle, XCircle } from 'lucide-react';
+import axios from 'axios';
+import { ShieldAlert, CheckCircle, Search, Smartphone, AlertTriangle, XCircle, Phone } from 'lucide-react'; // Added 'Phone' icon
 
 export default function SmsScanner({ auth }) {
+    // 1. Updated State to include 'sender'
+    const [sender, setSender] = useState('');
     const [message, setMessage] = useState('');
     const [loading, setLoading] = useState(false);
     const [result, setResult] = useState(null);
@@ -12,18 +14,27 @@ export default function SmsScanner({ auth }) {
 
     const handleScan = async (e) => {
         e.preventDefault();
-        if (!message.trim()) return;
+        if (!message.trim() || !sender.trim()) return;
 
         setLoading(true);
         setResult(null);
         setError(null);
 
         try {
-            const response = await axios.post(route('sms.analyze'), { message });
+            // 👇 FIXED: Changed 'body' to 'message' to match the Controller
+            const response = await axios.post(route('sms.analyze'), {
+                sender: sender,
+                message: message
+            });
             setResult(response.data);
         } catch (err) {
-            console.error(err); // Log error to console for debugging
-            setError(err.response?.data?.error || "Analysis failed. Please check your connection and API Key.");
+            console.error(err);
+            // Better error handling for Laravel Validation errors (422)
+            if (err.response && err.response.status === 422) {
+                setError(err.response.data.message || "Validation failed. Please check inputs.");
+            } else {
+                setError(err.response?.data?.error || "Analysis failed. Please check your connection and API Key.");
+            }
         } finally {
             setLoading(false);
         }
@@ -41,31 +52,59 @@ export default function SmsScanner({ auth }) {
 
                     {/* Input Section */}
                     <div className="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6 mb-6">
-                        <div className="flex items-center mb-4">
+                        <div className="flex items-center mb-6">
                             <Smartphone className="w-6 h-6 text-indigo-500 mr-2" />
-                            <h3 className="text-lg font-medium text-gray-900">Paste Message Text</h3>
+                            <h3 className="text-lg font-medium text-gray-900">Scan Message</h3>
                         </div>
 
-                        <form onSubmit={handleScan}>
-                            <textarea
-                                className="w-full h-32 p-4 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
-                                placeholder="Example: 'Your package is on hold. Click here to update delivery details...'"
-                                value={message}
-                                onChange={(e) => setMessage(e.target.value)}
-                            ></textarea>
+                        <form onSubmit={handleScan} className="space-y-6">
 
-                            <div className="mt-4 flex justify-end">
+                            {/* NEW: Sender Input Field */}
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Sender Name or Number
+                                </label>
+                                <div className="relative rounded-md shadow-sm">
+                                    <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                                        <Phone className="h-5 w-5 text-gray-400" />
+                                    </div>
+                                    <input
+                                        type="text"
+                                        className="block w-full rounded-md border-gray-300 pl-10 py-2 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm shadow-sm border"
+                                        placeholder="e.g. DHL, +353871234567, Unknown Number"
+                                        value={sender}
+                                        onChange={(e) => setSender(e.target.value)}
+                                        required
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Existing: Message Body Field */}
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Message Text
+                                </label>
+                                <textarea
+                                    className="w-full h-32 p-4 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 shadow-sm"
+                                    placeholder="Example: 'Your package is on hold. Click here to update delivery details...'"
+                                    value={message}
+                                    onChange={(e) => setMessage(e.target.value)}
+                                    required
+                                ></textarea>
+                            </div>
+
+                            <div className="flex justify-end">
                                 <button
                                     type="submit"
-                                    disabled={loading || !message}
+                                    disabled={loading || !message || !sender}
                                     className={`flex items-center px-6 py-2 rounded-md text-white font-semibold transition ${
-                                        loading ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'
+                                        loading || !message || !sender ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'
                                     }`}
                                 >
                                     {loading ? 'Analyzing...' : (
                                         <>
                                             <Search className="w-4 h-4 mr-2" />
-                                            Scan Message
+                                            Analyze Threat
                                         </>
                                     )}
                                 </button>
@@ -73,7 +112,7 @@ export default function SmsScanner({ auth }) {
                         </form>
                     </div>
 
-                    {/* 🟢 ADDED: Error Alert Message */}
+                    {/* Error Alert Message */}
                     {error && (
                         <div className="mb-6 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative flex items-center">
                             <XCircle className="w-5 h-5 mr-2" />

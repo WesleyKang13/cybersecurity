@@ -36,7 +36,7 @@ class DashboardController extends Controller
 
         // Add Emails
         if ($isConnected) {
-            $emails = ScannedEmail::where('user_id', $user->id)->latest()->take(20)->get();
+            $emails = ScannedEmail::where('user_id', $user->id)->latest()->take(50)->get();
             $feed = $feed->concat($emails->map(fn($e) => [
                 'id' => 'email_'.$e->id,
                 'source' => 'email',
@@ -53,7 +53,7 @@ class DashboardController extends Controller
         }
 
         // Add SMS
-        $sms = ScannedSms::where('user_id', $user->id)->latest()->take(20)->get();
+        $sms = ScannedSms::where('user_id', $user->id)->latest()->take(50)->get();
         $feed = $feed->concat($sms->map(fn($s) => [
             'id' => 'sms_'.$s->id,
             'source' => 'sms',
@@ -77,7 +77,7 @@ class DashboardController extends Controller
             $feed = $feed->where('source', 'sms');
         }
 
-        $recentAlerts = $feed->sortByDesc('date_obj')->values()->take(20);
+        $recentAlerts = $feed->sortByDesc('date_obj')->values()->take(50);
 
         return Inertia::render('Dashboard', [
             'initialStats' => $stats,

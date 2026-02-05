@@ -4,7 +4,7 @@ export default function ApplicationLogo(props) {
             {...props}
             src="/images/logo.png"
             alt="Logo"
-            className={`w-auto h-20 ${props.className}`}
+            className={`w-auto h-60 ${props.className}`}
         />
     );
 }
