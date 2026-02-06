@@ -30,10 +30,10 @@ class ScanGmailJob implements ShouldQueue
 
     // 2. MIDDLEWARE: The "Traffic Control"
     // We just give it the NAME here. The logic is now in AppServiceProvider.
-    public function middleware()
-    {
-        return [new RateLimited('gemini-api')];
-    }
+    // public function middleware()
+    // {
+    //     return [new RateLimited('gemini-api')];
+    // }
 
     public function handle(): void
     {
@@ -101,7 +101,7 @@ class ScanGmailJob implements ShouldQueue
                 'reason': 'Mandatory 1 sentence explanation.'
             }
         ";
-
+        
         try {
             // 3. RETRY LOGIC: Exponential Backoff
             // Attempt 3 times. Wait 1s, then 2s, then 4s between tries.
