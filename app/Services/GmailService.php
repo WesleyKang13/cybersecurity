@@ -84,7 +84,7 @@ class GmailService
 
                 $messages[] = [
                     'id' => $message->getId(),
-                    'ippet' => $details->getSnippet(),
+                    'snippet' => $details->getSnippet(),
                     'subject' => $subject,
                     'from' => $from,
                 ];

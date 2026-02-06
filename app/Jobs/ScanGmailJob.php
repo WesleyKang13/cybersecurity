@@ -101,7 +101,7 @@ class ScanGmailJob implements ShouldQueue
                 'reason': 'Mandatory 1 sentence explanation.'
             }
         ";
-        
+
         try {
             // 3. RETRY LOGIC: Exponential Backoff
             // Attempt 3 times. Wait 1s, then 2s, then 4s between tries.
