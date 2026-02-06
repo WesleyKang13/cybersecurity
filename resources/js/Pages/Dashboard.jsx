@@ -26,7 +26,7 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
     };
 
     const handleDisconnect = () => {
-        if (confirm('Are you sure you want to disconnect?')) {
+        if (confirm('Are you sure you want to disconnect? Your emails will not be scan once disconnected')) {
             post(route('google.disconnect'));
         }
     };
