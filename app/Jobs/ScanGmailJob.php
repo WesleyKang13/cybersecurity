@@ -47,7 +47,7 @@ class ScanGmailJob implements ShouldQueue
 
         foreach ($emails as $email) {
             // Skip if already scanned
-            if (ScannedEmail::where('google_message_id', $email['id'])->exists()) {
+            if (ScannedEmail::withTrashed()->where('google_message_id', $email['id'])->exists()) {
                 continue;
             }
 

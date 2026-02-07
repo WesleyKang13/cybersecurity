@@ -93,4 +93,40 @@ class DashboardController extends Controller
         $user->update(['token' => null, 'google_id' => null]);
         return redirect()->route('dashboard')->with('success', 'Disconnected successfully.');
     }
+
+    public function markSafe($id, $source)
+    {
+        $user = Auth::user();
+
+        // polish id
+        $id = substr($id, -1);
+
+        if ($source === 'email') {
+            $record = ScannedEmail::where('user_id', $user->id)->findOrFail($id);
+        } else {
+            $record = ScannedSms::where('user_id', $user->id)->findOrFail($id);
+        }
+
+        $record->update(['is_threat' => false, 'risk_score' => 0, 'severity' => 'verified']);
+
+        return back()->with('success', 'Item marked as safe.');
+    }
+
+    public function deleteRecord($id, $source)
+    {
+        $user = Auth::user();
+
+        // polish id
+        $id = substr($id, -1);
+
+        if ($source === 'email') {
+            $record = ScannedEmail::where('user_id', $user->id)->findOrFail($id);
+        } else {
+            $record = ScannedSms::where('user_id', $user->id)->findOrFail($id);
+        }
+
+        $record->delete();
+
+        return back()->with('success', 'Record deleted successfully.');
+    }
 }

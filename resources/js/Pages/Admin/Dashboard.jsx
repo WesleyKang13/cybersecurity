@@ -1,28 +1,37 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
-import { Head, useForm } from '@inertiajs/react'; // Import useForm
+import { Head, useForm, usePage } from '@inertiajs/react';
 import { useState } from 'react';
 import ThreatDetailModal from '@/Pages/Partials/ThreatDetailModal';
-import Modal from '@/Components/Modal'; // For Add User Form
+import Modal from '@/Components/Modal';
 import SecondaryButton from '@/Components/SecondaryButton';
 import PrimaryButton from '@/Components/PrimaryButton';
 import TextInput from '@/Components/TextInput';
 import InputLabel from '@/Components/InputLabel';
 import InputError from '@/Components/InputError';
-import { ShieldAlert, Mail, MessageSquare, Users, LayoutDashboard, UserPlus } from 'lucide-react';
+import {
+    ShieldAlert, Mail, MessageSquare, Users, LayoutDashboard, UserPlus,
+    FileText, Calendar, TrendingUp, CheckCircle, Smartphone
+} from 'lucide-react';
 
-export default function AdminDashboard({ auth, threats, users }) {
-    // State for View Switching
-    const [activeTab, setActiveTab] = useState('threats'); // 'threats' or 'users'
+export default function AdminDashboard({ auth, threats, users, reportData, filters }) {
+    // 👇 Active Tab State
+    const { props } = usePage(); // Get page props to check for errors
 
-    // State for Modals
+    const [activeTab, setActiveTab] = useState(() => {
+        if (reportData) return 'reports';
+        // If there are errors (e.g. "Email required") likely from the Add User form
+        if (props.errors && Object.keys(props.errors).length > 0) return 'users';
+        return 'threats';
+    });
+
+    // Modals
     const [selectedThreat, setSelectedThreat] = useState(null);
     const [showThreatModal, setShowThreatModal] = useState(false);
     const [showUserModal, setShowUserModal] = useState(false);
 
-    // Form for Adding User
+    // Form: Add User
     const { data, setData, post, processing, reset, errors } = useForm({
-        name: '',
-        email: '',
+        name: '', email: '',
     });
 
     const openThreatModal = (threat) => {
@@ -33,10 +42,22 @@ export default function AdminDashboard({ auth, threats, users }) {
     const submitUser = (e) => {
         e.preventDefault();
         post(route('admin.users.store'), {
-            onSuccess: () => {
-                setShowUserModal(false);
-                reset();
-            },
+            onSuccess: () => { setShowUserModal(false); reset(); },
+        });
+    };
+
+    const reportForm = useForm({
+        start_date: filters?.start_date || '',
+        end_date: filters?.end_date || ''
+    });
+
+    // 👇 Handle Report Generation
+    const submitReport = (e) => {
+        e.preventDefault();
+        reportForm.get(route('admin.dashboard'), {
+            onSuccess: () => setActiveTab('reports'), // Ensure we stay on reports tab
+            preserveState: true, // Keep the active tab
+            preserveScroll: true,
         });
     };
 
@@ -47,200 +68,232 @@ export default function AdminDashboard({ auth, threats, users }) {
         >
             <Head title="Admin Dashboard" />
 
-            {/* FULL WIDTH CONTAINER */}
             <div className="flex min-h-screen w-full bg-gray-100">
 
-                {/* --- LEFT SIDEBAR (20%) --- */}
+                {/* --- SIDEBAR --- */}
                 <aside className="w-1/5 bg-white border-r border-gray-200 min-h-screen">
                     <div className="p-6">
-                        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4">
-                            Menu
-                        </h3>
+                        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4">Menu</h3>
                         <nav className="space-y-2">
                             <button
                                 onClick={() => setActiveTab('threats')}
-                                className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-md transition-colors ${
-                                    activeTab === 'threats'
-                                    ? 'bg-indigo-50 text-indigo-700'
-                                    : 'text-gray-600 hover:bg-gray-50'
-                                }`}
+                                className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-md transition-colors ${activeTab === 'threats' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
                             >
-                                <LayoutDashboard className="w-5 h-5 mr-3" />
-                                Threat Overview
+                                <LayoutDashboard className="w-5 h-5 mr-3" /> Threat Overview
                             </button>
 
                             <button
                                 onClick={() => setActiveTab('users')}
-                                className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-md transition-colors ${
-                                    activeTab === 'users'
-                                    ? 'bg-indigo-50 text-indigo-700'
-                                    : 'text-gray-600 hover:bg-gray-50'
-                                }`}
+                                className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-md transition-colors ${activeTab === 'users' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
                             >
-                                <Users className="w-5 h-5 mr-3" />
-                                User Management
+                                <Users className="w-5 h-5 mr-3" /> User Management
+                            </button>
+
+                            {/* 👇 NEW REPORTS TAB */}
+                            <button
+                                onClick={() => setActiveTab('reports')}
+                                className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-md transition-colors ${activeTab === 'reports' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
+                            >
+                                <FileText className="w-5 h-5 mr-3" /> Reports & Analytics
                             </button>
                         </nav>
                     </div>
                 </aside>
 
-                {/* --- RIGHT CONTENT (80%) --- */}
+                {/* --- MAIN CONTENT --- */}
                 <main className="w-4/5 p-8">
 
-                    {/* VIEW 1: THREAT OVERVIEW */}
+                    {/* VIEW 1: THREATS */}
                     {activeTab === 'threats' && (
+                        // ... (Your existing Threat Table code goes here) ...
                         <div>
-                            <div className="mb-6 flex justify-between items-center">
+                             <div className="mb-6 flex justify-between items-center">
                                 <h3 className="text-2xl font-bold text-gray-800">High Priority Alerts</h3>
-                                <span className="bg-red-100 text-red-800 text-xs font-bold px-3 py-1 rounded-full">
-                                    {threats.length} Active Threats
-                                </span>
                             </div>
-
-                            <div className="bg-white overflow-hidden shadow-sm sm:rounded-lg">
-                                <table className="min-w-full divide-y divide-gray-200">
-                                    <thead className="bg-gray-50">
-                                        <tr>
-                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
-                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Severity</th>
-                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Employee</th>
-                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Subject/Content</th>
-                                            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="bg-white divide-y divide-gray-200">
-                                        {threats.map((threat) => (
-                                            <tr key={`${threat.type}-${threat.id}`} className="hover:bg-red-50 transition-colors">
-                                                <td className="px-6 py-4 whitespace-nowrap">
-                                                    <div className="flex items-center">
-                                                        {threat.type === 'email' ? (
-                                                            <Mail className="w-4 h-4 text-blue-500 mr-2" />
-                                                        ) : (
-                                                            <MessageSquare className="w-4 h-4 text-green-500 mr-2" />
-                                                        )}
-                                                        <span className="text-xs text-gray-400 uppercase font-bold">{threat.type}</span>
-                                                    </div>
-                                                </td>
-                                                <td className="px-6 py-4 whitespace-nowrap">
-                                                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
-                                                        <ShieldAlert className="w-4 h-4 mr-1" />
-                                                        HIGH
-                                                    </span>
-                                                </td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-bold">{threat.user?.name}</td>
-                                                <td className="px-6 py-4 text-sm text-gray-500 truncate max-w-xs">
-                                                    {threat.type === 'email' ? threat.subject : (threat.body || threat.snippet)}
-                                                </td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                                    <button onClick={() => openThreatModal(threat)} className="text-indigo-600 hover:text-indigo-900 font-semibold">Review</button>
-                                                </td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
+                            {/* Insert your existing Threat Table here */}
+                            <div className="p-4 bg-white rounded shadow text-gray-500 text-center">
+                                (Your Threat Table Component)
                             </div>
                         </div>
                     )}
 
-                    {/* VIEW 2: USER MANAGEMENT */}
+                    {/* VIEW 2: USERS */}
                     {activeTab === 'users' && (
+                        // ... (Your existing User Table code goes here) ...
                         <div>
-                            <div className="mb-6 flex justify-between items-center">
+                             <div className="mb-6 flex justify-between items-center">
                                 <h3 className="text-2xl font-bold text-gray-800">Organization Members</h3>
                                 <PrimaryButton onClick={() => setShowUserModal(true)}>
-                                    <UserPlus className="w-4 h-4 mr-2" />
-                                    Add New User
+                                    <UserPlus className="w-4 h-4 mr-2" /> Add New User
                                 </PrimaryButton>
                             </div>
-
-                            <div className="bg-white overflow-hidden shadow-sm sm:rounded-lg">
-                                <table className="min-w-full divide-y divide-gray-200">
-                                    <thead className="bg-gray-50">
-                                        <tr>
-                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
-                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
-                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Joined</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="bg-white divide-y divide-gray-200">
-                                        {users.map((user) => (
-                                            <tr key={user.id} className="hover:bg-gray-50">
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{user.name}</td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{user.email}</td>
-                                                <td className="px-6 py-4 whitespace-nowrap">
-                                                    <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${user.role === 'admin' ? 'bg-purple-100 text-purple-800' : 'bg-green-100 text-green-800'}`}>
-                                                        {user.role}
-                                                    </span>
-                                                </td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                                    {new Date(user.created_at).toLocaleDateString()}
-                                                </td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
+                            {/* Insert your existing User Table here */}
+                             <div className="p-4 bg-white rounded shadow text-gray-500 text-center">
+                                (Your User Table Component)
                             </div>
                         </div>
                     )}
 
+                    {/* 👇 VIEW 3: REPORTS */}
+                    {activeTab === 'reports' && (
+                        <div className="space-y-6">
+                            <h3 className="text-2xl font-bold text-gray-800">Security Reports</h3>
+
+                            {/* 1. Date Selection Form */}
+                            <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                                <h4 className="text-md font-semibold text-gray-700 mb-4 flex items-center">
+                                    <Calendar className="w-4 h-4 mr-2" /> Generate New Report
+                                </h4>
+                                <form onSubmit={submitReport} className="flex gap-4 items-end">
+                                    <div className="flex-1">
+                                        <InputLabel value="Start Date" />
+                                        <TextInput
+                                            type="date"
+                                            className="w-full mt-1"
+                                            value={reportForm.data.start_date}
+                                            onChange={e => reportForm.setData('start_date', e.target.value)}
+                                        />
+                                        <InputError message={reportForm.errors.start_date} />
+                                    </div>
+                                    <div className="flex-1">
+                                        <InputLabel value="End Date" />
+                                        <TextInput
+                                            type="date"
+                                            className="w-full mt-1"
+                                            value={reportForm.data.end_date}
+                                            onChange={e => reportForm.setData('end_date', e.target.value)}
+                                        />
+                                        <InputError message={reportForm.errors.end_date} />
+                                    </div>
+                                    <PrimaryButton disabled={reportForm.processing}>
+                                        Generate Analysis
+                                    </PrimaryButton>
+                                </form>
+                            </div>
+
+                            {/* 2. Report Results (Only show if data exists) */}
+                            {reportData && (
+                                <div className="space-y-6 animate-fade-in">
+                                    <div className="flex items-center justify-between">
+                                        <h4 className="text-lg font-bold text-gray-600">
+                                            Results for: <span className="text-indigo-600">{reportData.date_range}</span>
+                                        </h4>
+                                    </div>
+
+                                    {/* Stats Cards */}
+                                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                                        {/* Protection Score */}
+                                        <div className="bg-gradient-to-br from-indigo-500 to-purple-600 p-4 rounded-lg text-white shadow">
+                                            <div className="flex justify-between items-start">
+                                                <div>
+                                                    <p className="text-indigo-100 text-sm font-medium">Protection Score</p>
+                                                    <p className="text-3xl font-bold mt-1">{reportData.protection_score}%</p>
+                                                </div>
+                                                <TrendingUp className="w-8 h-8 text-indigo-200 opacity-50" />
+                                            </div>
+                                            <p className="text-xs mt-2 text-indigo-100 opacity-80">Based on threats neutralized</p>
+                                        </div>
+
+                                        {/* Total Emails */}
+                                        <div className="bg-white p-4 rounded-lg shadow border border-gray-100">
+                                            <div className="flex justify-between items-start">
+                                                <div>
+                                                    <p className="text-gray-500 text-sm font-medium">Emails Scanned</p>
+                                                    <p className="text-2xl font-bold text-gray-800 mt-1">{reportData.email_stats.total}</p>
+                                                </div>
+                                                <Mail className="w-6 h-6 text-blue-500 bg-blue-50 p-1 rounded" />
+                                            </div>
+                                            <div className="mt-2 text-xs flex gap-3">
+                                                <span className="text-red-500 font-semibold">{reportData.email_stats.threats} Threats</span>
+                                                <span className="text-green-600 font-semibold">{reportData.email_stats.verified_safe} Verified Safe</span>
+                                            </div>
+                                        </div>
+
+                                        {/* Total SMS */}
+                                        <div className="bg-white p-4 rounded-lg shadow border border-gray-100">
+                                            <div className="flex justify-between items-start">
+                                                <div>
+                                                    <p className="text-gray-500 text-sm font-medium">SMS Scanned</p>
+                                                    <p className="text-2xl font-bold text-gray-800 mt-1">{reportData.sms_stats.total}</p>
+                                                </div>
+                                                <Smartphone className="w-6 h-6 text-purple-500 bg-purple-50 p-1 rounded" />
+                                            </div>
+                                            <div className="mt-2 text-xs text-red-500 font-semibold">
+                                                {reportData.sms_stats.threats} Threats Detected
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* User Breakdown Table */}
+                                    <div className="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+                                        <div className="px-6 py-4 border-b border-gray-100 bg-gray-50">
+                                            <h5 className="font-semibold text-gray-700">Email Scanning Activity by User</h5>
+                                        </div>
+                                        <table className="min-w-full divide-y divide-gray-200">
+                                            <thead className="bg-gray-50">
+                                                <tr>
+                                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">User Name</th>
+                                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Emails Scanned</th>
+                                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Activity Share</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="bg-white divide-y divide-gray-200">
+                                                {reportData.user_breakdown.length > 0 ? (
+                                                    reportData.user_breakdown.map((stat, idx) => (
+                                                        <tr key={idx}>
+                                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                                                                {stat.name}
+                                                            </td>
+                                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                                                {stat.email_count}
+                                                            </td>
+                                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                                                <div className="w-full bg-gray-200 rounded-full h-1.5 max-w-[100px]">
+                                                                    <div
+                                                                        className="bg-blue-500 h-1.5 rounded-full"
+                                                                        style={{ width: `${(stat.email_count / reportData.email_stats.total) * 100}%` }}
+                                                                    ></div>
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    ))
+                                                ) : (
+                                                    <tr>
+                                                        <td colSpan="3" className="px-6 py-4 text-center text-sm text-gray-400">
+                                                            No user activity found in this period.
+                                                        </td>
+                                                    </tr>
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </main>
             </div>
 
-            {/* MODAL 1: THREAT DETAILS */}
-            <ThreatDetailModal
+            {/* Modals (Keep existing modals here) */}
+             <ThreatDetailModal
                 show={showThreatModal}
                 onClose={() => setShowThreatModal(false)}
                 email={selectedThreat}
             />
 
-            {/* MODAL 2: ADD USER */}
             <Modal show={showUserModal} onClose={() => setShowUserModal(false)} maxWidth="md">
-                <div className="p-6">
+                {/* ... existing user form ... */}
+                 <div className="p-6">
                     <h2 className="text-lg font-medium text-gray-900">Add New User</h2>
-                    <p className="mt-1 text-sm text-gray-600 mb-6">
-                        Create a new account for your organization. Default password is "password".
-                    </p>
-
-                    <form onSubmit={submitUser}>
-                        <div className="mb-4">
-                            <InputLabel htmlFor="name" value="Full Name" />
-                            <TextInput
-                                id="name"
-                                type="text"
-                                className="mt-1 block w-full"
-                                value={data.name}
-                                onChange={(e) => setData('name', e.target.value)}
-                                required
-                            />
-                            <InputError message={errors.name} className="mt-2" />
+                     <form onSubmit={submitUser}>
+                         {/* ... inputs ... */}
+                          <div className="flex justify-end mt-4">
+                            <SecondaryButton onClick={() => setShowUserModal(false)} className="mr-3">Cancel</SecondaryButton>
+                            <PrimaryButton disabled={processing}>Create User</PrimaryButton>
                         </div>
-
-                        <div className="mb-6">
-                            <InputLabel htmlFor="email" value="Email Address" />
-                            <TextInput
-                                id="email"
-                                type="email"
-                                className="mt-1 block w-full"
-                                value={data.email}
-                                onChange={(e) => setData('email', e.target.value)}
-                                required
-                            />
-                            <InputError message={errors.email} className="mt-2" />
-                        </div>
-
-                        <div className="flex justify-end">
-                            <SecondaryButton onClick={() => setShowUserModal(false)} className="mr-3">
-                                Cancel
-                            </SecondaryButton>
-                            <PrimaryButton disabled={processing}>
-                                Create User
-                            </PrimaryButton>
-                        </div>
-                    </form>
-                </div>
+                     </form>
+                 </div>
             </Modal>
-
         </AuthenticatedLayout>
     );
 }

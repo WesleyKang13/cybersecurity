@@ -25,15 +25,20 @@ Route::get('/', function () {
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
     Route::post('/auth/disconnect', [DashboardController::class, 'disconnect'])->name('google.disconnect');
+    Route::post('/scan/mark-safe/{id}/{source}', [DashboardController::class, 'markSafe'])->name('scan.mark-safe');
+    Route::delete('/scan/delete/{id}/{source}', [DashboardController::class, 'deleteRecord'])->name('scan.delete');
 
     Route::get('/sms-scanner', [SmsController::class, 'index'])->name('sms.index');
     Route::post('/sms-analyze', [SmsController::class, 'analyze'])->name('sms.analyze');
+});
 
+Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('/admin/dashboard', [AdminDashboardController::class, 'index'])
             ->name('admin.dashboard');
     Route::post('/admin/users', [AdminDashboardController::class, 'storeUser'])->name('admin.users.store');
-});
+    //Route::post('/admin/reports', [AdminDashboardController::class, 'generateReport'])->name('admin.reports.generate');
 
+});
 
 Route::middleware('auth')->group(function () {
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
