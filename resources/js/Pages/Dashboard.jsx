@@ -1,5 +1,5 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
-import { Head, usePage, Link, useForm } from '@inertiajs/react';
+import { Head, usePage, Link, useForm, router } from '@inertiajs/react';
 import { ShieldAlert, ShieldCheck, Mail, Smartphone, Plus, CheckCircle, XCircle, LogOut } from 'lucide-react';
 import { useState } from 'react';
 import ThreatDetailModal from '@/Pages/Partials/ThreatDetailModal';
@@ -28,6 +28,18 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
     const handleDisconnect = () => {
         if (confirm('Are you sure you want to disconnect? Your emails will not be scan once disconnected')) {
             post(route('google.disconnect'));
+        }
+    };
+
+    const handleMarkSafe = (id, source) => {
+        if (confirm("Mark this item as safe? It will be removed from the threat list.")) {
+            router.post(route('scan.mark-safe', { id, source }));
+        }
+    };
+
+    const handleDelete = (id, source) => {
+        if (confirm("Note: This will only remove the email from your dashboard and not in your gmail inbox. Proceed to delete?")) {
+            router.delete(route('scan.delete', { id, source }));
         }
     };
 
@@ -145,10 +157,14 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                                         <tr>
                                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
                                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                                            {/* 🟢 NEW: Risk Column Header */}
                                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Risk Score</th>
                                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Subject / Content</th>
                                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                                            {filter === 'threats' && (
+                                                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                    Actions
+                                                </th>
+                                            )}
                                         </tr>
                                     </thead>
                                     <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
@@ -181,11 +197,10 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                                                         </span>
                                                     </td>
 
-                                                    {/* 🟢 NEW: Risk Score Bar */}
                                                     <td className="px-6 py-4 whitespace-nowrap align-middle">
                                                         <div className="w-24">
                                                             <div className="flex justify-between text-xs mb-1">
-                                                                <span className="font-bold text-gray-600 dark:text-gray-400">{alert.risk_score}%</span>
+                                                                <span className="font-bold text-gray-600 dark:text-gray-400">{alert.risk_score}% - {alert.severity.toUpperCase()}</span>
                                                             </div>
                                                             <div className="w-full bg-gray-200 rounded-full h-1.5 dark:bg-gray-700">
                                                                 <div className={`h-1.5 rounded-full ${
@@ -206,6 +221,29 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                                                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
                                                         {alert.date}
                                                     </td>
+
+                                                    {filter === 'threats' && (
+                                                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                            {alert.is_threat && (
+                                                                <>
+                                                                    <button
+                                                                        onClick={(e) => { e.stopPropagation(); handleMarkSafe(alert.id, alert.source); }}
+                                                                        className="text-green-600 hover:text-green-900 mr-3"
+                                                                        title="Mark as Safe"
+                                                                    >
+                                                                        <CheckCircle className="w-5 h-5" />
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={(e) => { e.stopPropagation(); handleDelete(alert.id, alert.source); }}
+                                                                        className="text-gray-400 hover:text-gray-600"
+                                                                        title="Dismiss Alert"
+                                                                    >
+                                                                        <XCircle className="w-5 h-5" />
+                                                                    </button>
+                                                                </>
+                                                            )}
+                                                        </td>
+                                                    )}
                                                 </tr>
                                             ))
                                         ) : (
