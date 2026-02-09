@@ -26,17 +26,22 @@ class AuthController extends Controller
     public function callback()
     {
         try {
-            // Get the user details from Google
             $googleUser = Socialite::driver('google')->user();
-
-            // This fills the 'token' column we created in the migration
             $user = Auth::user();
 
+            // 1. Build the Full Token Array Manually
+            $fullTokenData = [
+                'access_token'  => $googleUser->token,
+                'refresh_token' => $googleUser->refreshToken,
+                'expires_in'    => $googleUser->expiresIn,
+                'created'       => now()->timestamp,
+            ];
+
+            // 2. Save it to the existing 'token' column
+            // Laravel will automatically turn this array into JSON text because of the cast above.
             $user->update([
                 'google_id' => $googleUser->id,
-                'token' => $googleUser->token, // This saves the Access Token to your new column
-                // If you added a refresh_token column to users table, save it here too:
-                // 'refresh_token' => $googleUser->refreshToken,
+                'token' => $fullTokenData,
             ]);
 
             return redirect()->route('dashboard')->with('success', 'Google Workspace Connected!');
