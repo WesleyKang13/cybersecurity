@@ -25,8 +25,8 @@ class AdminDashboardController extends Controller
 
         // 1. Fetch High Threat Emails ONLY (Sorted by newest first)
         $emails = ScannedEmail::with('user:id,name')
-            ->whereHas('user', fn($q) => $q->where('organization_id', $user->organization_id))
-            ->where('severity', 'high')
+           // ->whereHas('user', fn($q) => $q->where('organization_id', $user->organization_id))
+            ->where('is_threat', true)
             ->orderBy('created_at', 'desc')
             ->get()
             // We keep this mapping so your frontend icons don't break
@@ -36,7 +36,7 @@ class AdminDashboardController extends Controller
         $orgUsers = User::where('organization_id', $user->organization_id)
             ->orderBy('created_at', 'desc')
             ->get();
-            
+
         $reportData = null;
 
         // Check if the user passed date filters via GET request
