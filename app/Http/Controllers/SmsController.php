@@ -33,26 +33,28 @@ class SmsController extends Controller
             return response()->json(['error' => 'Server Error: GEMINI_API_KEY is missing.'], 500);
         }
 
-        // 👇 FIXED: The full, strict prompt to ensure JSON keys match your Frontend
         $prompt = "
-            You are a cybersecurity expert specializing in Smishing (SMS Phishing) detection.
-            Analyze the following SMS context:
+            Role: Smishing Detection Expert.
+            Analyze the following SMS for fraud.
 
-            Sender: \"{$sender}\"
-            Message: \"{$message}\"
+            Sender: '$sender'
+            Message: '$message'
 
-            CRITICAL SCORING RULES:
-            - If the message claims to be from a known brand (Bank, Post, Netflix) but the Sender is a random number or unrelated shortcode, flag as HIGH THREAT (Mismatch).
-            - Look for urgency cues ('verify', 'suspended', 'act now').
-            - only set is_threat is true if the risk_score is more than 30
+            SCORING CRITERIA:
+            - Identity Mismatch: Claims to be a bank/utility but comes from a standard 10-digit mobile number or suspicious shortcode.
+            - Link Analysis: Flag any URL shorteners or non-official domains.
+            - Tone: Look for 'Urgent Action Required,' 'Package Pending,' or 'Tax Refund.'
+            - If the message is standard for which the organization will present then it is safe.
 
-            OUTPUT FORMAT (Strict JSON, no markdown):
+            is_threat = true ONLY if risk_score > 30.
+
+            OUTPUT FORMAT (Strict JSON):
             {
-                \"is_threat\": boolean,
-                \"risk_score\": integer (0-100),
-                \"severity\": \"low\", \"medium\", \"high\", or \"critical\",
-                \"type\": \"string (e.g., 'Phishing', 'Impersonation', 'Clean')\",
-                \"explanation\": \"string (A clear, short sentence explaining why.)\"
+            'is_threat': boolean,
+            'risk_score': 0-100,
+            'severity': 'low' | 'medium' | 'high' | 'critical',
+            'type': 'Phishing' | 'Impersonation' | 'Spam' | 'Clean',
+            'explanation': 'Clear, concise sentence.'
             }
         ";
 

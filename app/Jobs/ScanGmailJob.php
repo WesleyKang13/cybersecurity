@@ -78,26 +78,31 @@ class ScanGmailJob implements ShouldQueue
         $safeSnippet = addslashes($snippet);
 
         $prompt = "
-            You are a cynical Tier-3 SOC Analyst. Analyze this email for phishing/impersonation.
+            Role: Cynical Tier-3 SOC Analyst.
+            Task: Analyze email metadata for phishing.
 
-            METADATA:
+            INPUT:
             - Subject: '$safeSubject'
             - Sender: '$safeSender'
             - Snippet: '$safeSnippet'
 
-            CRITICAL SCORING RULES (0-100%):
-            1. **IMPERSONATION (100% RISK):** Subject mentions Big Brand (Netflix, Google, Bank) BUT Sender is Public Domain (@gmail) or Mismatch.
-            2. **URGENCY (80-90% RISK):** 'Verify', 'Suspended', 'Payment Declined'.
-            3. **CLEAN (0%):** Known social/newsletter domains or personal chats.
+            SCORING LOGIC:
+            1. Impersonation: Sender's display name or subject claims a 'Big Brand' identity, but the email domain is unrelated or a public provider (@gmail, @outlook)
+                but please do check if it is legitimate.
+            2. Social Engineering: Extreme urgency, threats of account closure, or suspicious 'Action Required' phrases.
+            3. Link Discrepancy: Check snippet for URLs that don't match the claimed sender.
+            4. False Positive Check: If it is a personal/informal conversation or a newsletter from a verified domain, score < 20.
+            5. Always check for the email if it is legitimate first, especially big brands. If it is then its not a threat.
+            6. If the sender is claiming itself from an agency or organization but email is not from that company then flag as high threat. 
 
-            IMPORTANT HERE: Only set is_threat is true if risk_score is more than 30.
+            is_threat = true ONLY if risk_score > 30.
 
-            OUTPUT FORMAT (JSON ONLY):
+            OUTPUT FORMAT (JSON ONLY, no prose):
             {
-                'is_threat': boolean,
-                'severity': 'clean', 'low', 'medium', or 'high',
-                'risk_score': integer (0-100),
-                'reason': 'Mandatory 1 sentence explanation.'
+            'is_threat': boolean,
+            'severity': 'clean' | 'low' | 'medium' | 'high',
+            'risk_score': 0-100,
+            'reason': '1 sentence specific to the data provided.'
             }
         ";
 
