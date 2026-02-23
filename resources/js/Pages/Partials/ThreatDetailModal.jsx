@@ -4,20 +4,20 @@ import DangerButton from '@/Components/DangerButton';
 import { ShieldAlert, ShieldCheck, Mail, AlertTriangle } from 'lucide-react';
 
 export default function ThreatDetailModal({ show, onClose, email }) {
-    // Safety check for empty data
+    console.log("Email data received by Modal:", email);
     // Merge defaults with incoming data
     const safeEmail = {
         subject: 'Loading...',
         sender: 'Unknown Sender',
         severity: 'clean',
-        snippet: 'No content available for this email.', // Default text
+        snippet: 'No content available for this email.',
         reason: 'No analysis provided.',
-        ...email // Overwrite defaults with actual data if it exists
+        detection_layer: 'Unknown', // Added default for the new column
+        ...email
     };
 
     return (
         <Modal show={show} onClose={onClose} maxWidth="lg">
-            {/* 👇 FORCE Z-INDEX: Added relative, z-[999], and background white */}
             <div className="relative z-[999] bg-white dark:bg-gray-800 rounded-lg shadow-xl overflow-hidden">
 
                 {/* 1. HEADER */}
@@ -58,17 +58,39 @@ export default function ThreatDetailModal({ show, onClose, email }) {
                             </div>
                         </div>
 
-                        {/* AI Reasoning - Highlighted */}
+                        {/* DYNAMIC VERDICT BOX - With Fallback for old null records */}
                         <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
-                            <div className="flex items-start">
-                                <AlertTriangle className="w-4 h-4 text-indigo-500 mt-0.5 mr-2 flex-shrink-0" />
-                                <div>
-                                    <span className="text-xs font-bold text-indigo-600 uppercase block mb-1">AI Verdict</span>
-                                    <p className="text-sm italic text-gray-700 dark:text-gray-300">
-                                        "{safeEmail.reason || 'No specific reason provided.'}"
-                                    </p>
+                            {safeEmail.detection_layer === 'Layer 1 (Whitelist)' || safeEmail.reason?.includes('Auto-cleared') ? (
+                                <div className="flex items-start">
+                                    <ShieldCheck className="w-4 h-4 text-green-500 mt-0.5 mr-2 flex-shrink-0" />
+                                    <div>
+                                        <span className="text-xs font-bold text-green-600 uppercase block mb-1">System Verdict (Layer 1)</span>
+                                        <p className="text-sm font-medium text-green-700 dark:text-green-400">
+                                            ✅ NO AI NEEDED: This email is safe as it was caught at Layer 1 (Trusted Whitelist).
+                                        </p>
+                                    </div>
                                 </div>
-                            </div>
+                            ) : safeEmail.detection_layer === 'Layer 2 (Heuristics)' || safeEmail.reason?.includes('Manual Rule') ? (
+                                <div className="flex items-start">
+                                    <ShieldAlert className="w-4 h-4 text-red-500 mt-0.5 mr-2 flex-shrink-0" />
+                                    <div>
+                                        <span className="text-xs font-bold text-red-600 uppercase block mb-1">System Verdict (Layer 2)</span>
+                                        <p className="text-sm font-medium text-red-700 dark:text-red-400">
+                                            🛑 NO AI NEEDED: Caught at Layer 2 (Manual Security Rules) due to suspicious keywords.
+                                        </p>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="flex items-start">
+                                    <AlertTriangle className="w-4 h-4 text-indigo-500 mt-0.5 mr-2 flex-shrink-0" />
+                                    <div>
+                                        <span className="text-xs font-bold text-indigo-600 uppercase block mb-1">AI Verdict (Layer 3)</span>
+                                        <p className="text-sm italic text-gray-700 dark:text-gray-300">
+                                            🤖 "{safeEmail.reason || 'No specific reason provided.'}"
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
 

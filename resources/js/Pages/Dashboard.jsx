@@ -1,7 +1,7 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
 import { Head, usePage, Link, useForm, router } from '@inertiajs/react';
 import { ShieldAlert, ShieldCheck, Mail, Smartphone, Plus, CheckCircle, XCircle, LogOut } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import ThreatDetailModal from '@/Pages/Partials/ThreatDetailModal';
 
 export default function Dashboard({ auth, initialStats, isConnected, recentAlerts, filter }) {
@@ -12,6 +12,24 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
 
     const [selectedEmail, setSelectedEmail] = useState(null);
     const [showModal, setShowModal] = useState(false);
+
+    // --- AUTO REFRESH LOGIC ---
+    useEffect(() => {
+        // Set an interval to run every 60 seconds (60000 milliseconds)
+        const interval = setInterval(() => {
+            router.reload({
+                // Only ask the server for the data that actually changes
+                only: ['recentAlerts', 'initialStats'],
+                // Don't reset the user's variables (keeps modals open)
+                preserveState: true,
+                // Don't jump the screen back to the top
+                preserveScroll: true,
+            });
+        }, 60000);
+
+        // Cleanup the timer if the user navigates to a different page
+        return () => clearInterval(interval);
+    }, []);
 
     const handleRowClick = (alert) => {
         if (alert.source === 'email') {

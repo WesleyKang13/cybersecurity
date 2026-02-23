@@ -16,6 +16,7 @@ class ScannedEmail extends Model
         'sender',
         'snippet',
         'is_threat',
+        'detection_layer',
         'severity',
         'reason',
         'risk_score'
