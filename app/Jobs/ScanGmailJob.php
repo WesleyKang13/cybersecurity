@@ -51,8 +51,12 @@ class ScanGmailJob implements ShouldQueue
                 continue;
             }
 
-            // Ask Gemini (with Retry Logic built-in)
-            $analysis = $this->analyzeWithGemini($email['subject'], $email['snippet'], $email['from']);
+            // EXTRACT THE SENDER DOMAIN (e.g., "support@github.com" -> "github.com")
+            preg_match('/@([\w.-]+)/', $email['from'], $matches);
+            $senderDomain = isset($matches[1]) ? strtolower(trim($matches[1], '>')) : '';
+
+            // PASS TO THE SECURITY FUNNEL (Whitelist -> Rules -> AI)
+            $analysis = $this->runSecurityFunnel($email['subject'], $email['snippet'], $email['from'], $senderDomain);
 
             ScannedEmail::create([
                 'user_id' => $this->user->id,
@@ -61,11 +65,105 @@ class ScanGmailJob implements ShouldQueue
                 'sender' => $email['from'],
                 'snippet' => $email['snippet'],
                 'is_threat' => $analysis['is_threat'],
+                'detection_layer' => $analysis['detection_layer'],
                 'severity' => $analysis['severity'],
                 'risk_score' => $analysis['risk_score'],
                 'reason' => $analysis['reason'] ?? null,
             ]);
         }
+    }
+
+    private function runSecurityFunnel($subject, $snippet, $sender, $senderDomain)
+    {
+        // ---------------------------------------------------------
+        // LAYER 1: THE WHITELIST (Known Good)
+        // ---------------------------------------------------------
+        $whitelist = [
+            // --- Developer & Cloud Tools ---
+            'github.com', 'gitlab.com', 'bitbucket.org', 'stackoverflow.com',
+            'koyeb.com', 'aws.amazon.com', 'digitalocean.com', 'cloudflare.com',
+            'vercel.com', 'netlify.com', 'heroku.com', 'docker.com', 'npmjs.com',
+            'sentry.io', 'datadoghq.com', 'postman.com',
+
+            // --- Productivity & Work ---
+            'slack.com', 'zoom.us', 'atlassian.com', 'trello.com', 'asana.com',
+            'monday.com', 'notion.so', 'dropbox.com', 'box.com', 'docusign.com',
+            'docusign.net', 'miro.com', 'figma.com', 'canva.com', 'calendly.com',
+            'hubspot.com', 'salesforce.com', 'zendesk.com', 'intercom.com',
+
+            // --- Social Media & Communication ---
+            'linkedin.com', 'twitter.com', 'x.com', 'facebookmail.com',
+            'instagram.com', 'pinterest.com', 'reddit.com', 'redditmail.com',
+            'discord.com', 'tiktok.com', 'snapchat.com', 'twitch.tv', 'vimeo.com',
+
+            // --- E-commerce & Delivery ---
+            'amazon.com', 'amazon.co.uk', 'ebay.com', 'ebay.co.uk', 'etsy.com',
+            'shopify.com', 'walmart.com', 'target.com', 'aliexpress.com',
+            'uber.com', 'ubereats.com', 'deliveroo.co.uk', 'deliveroo.ie',
+            'just-eat.ie', 'just-eat.co.uk', 'doordash.com', 'instacart.com',
+
+            // --- Finance, Banking & Payments ---
+            'paypal.com', 'stripe.com', 'squareup.com', 'revolut.com', 'monzo.com',
+            'chase.com', 'bankofamerica.com', 'americanexpress.com', 'discover.com',
+            'aib.ie', 'bankofireland.com', 'permanenttsb.ie', // Irish Banking
+
+            // --- Entertainment & Gaming ---
+            'netflix.com', 'spotify.com', 'hulu.com', 'disneyplus.com',
+            'steampowered.com', 'epicgames.com', 'ea.com', 'ubisoft.com',
+            'playstation.com', 'xbox.com', 'nintendo.com', 'roblox.com',
+
+            // --- Travel & Transport ---
+            'airbnb.com', 'booking.com', 'expedia.com', 'skyscanner.net',
+            'ryanair.com', 'aerlingus.com', 'aircoach.ie', 'britishairways.com',
+            'delta.com', 'united.com', 'americanairlines.com', 'lyft.com',
+            'irishrail.ie', 'dublinbus.ie',
+
+            // --- Tech Giants (Corporate communications only, NOT their public webmail) ---
+            'google.com', 'apple.com', 'microsoft.com', 'meta.com',
+
+            // --- News, Education & Government ---
+            'medium.com', 'quora.com', 'wikipedia.org', 'coursera.org', 'udemy.com',
+            'nytimes.com', 'bbc.co.uk', 'bbc.com', 'theguardian.com', 'wsj.com',
+            'revenue.ie', 'mygovid.ie', 'hse.ie', 'anpost.com'
+        ];
+
+        if (in_array($senderDomain, $whitelist)) {
+            return [
+                'is_threat' => false,
+                'detection_layer' => 'Layer 1 (Whitelist)',
+                'severity' => 'clean',
+                'risk_score' => 0,
+                'reason' => "Auto-cleared: '{$senderDomain}' is a verified trusted domain."
+            ];
+        }
+
+        // ---------------------------------------------------------
+        // LAYER 2: MANUAL HEURISTICS (Known Bad)
+        // ---------------------------------------------------------
+        $subjectLower = strtolower($subject);
+        $snippetLower = strtolower($snippet);
+
+        $publicProviders = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com'];
+        $urgentKeywords = ['urgent', 'suspend', 'immediate action', 'password reset', 'invoice', 'verify your account'];
+
+        if (in_array($senderDomain, $publicProviders)) {
+            foreach ($urgentKeywords as $keyword) {
+                if (str_contains($subjectLower, $keyword) || str_contains($snippetLower, $keyword)) {
+                    return [
+                        'is_threat' => true,
+                        'detection_layer' => 'Layer 2 (Heuristics)',
+                        'severity' => 'high',
+                        'risk_score' => 90,
+                        'reason' => "Manual Rule: Public provider ({$senderDomain}) using suspicious keyword: '{$keyword}'."
+                    ];
+                }
+            }
+        }
+
+        // ---------------------------------------------------------
+        // LAYER 3: THE AI DETECTIVE (Fallback)
+        // ---------------------------------------------------------
+        return $this->analyzeWithGemini($subject, $snippet, $sender);
     }
 
     private function analyzeWithGemini($subject, $snippet, $sender)
@@ -93,7 +191,7 @@ class ScanGmailJob implements ShouldQueue
             3. Link Discrepancy: Check snippet for URLs that don't match the claimed sender.
             4. False Positive Check: If it is a personal/informal conversation or a newsletter from a verified domain, score < 20.
             5. Always check for the email if it is legitimate first, especially big brands. If it is then its not a threat.
-            6. If the sender is claiming itself from an agency or organization but email is not from that company then flag as high threat. 
+            6. If the sender is claiming itself from an agency or organization but email is not from that company then flag as high threat.
 
             is_threat = true ONLY if risk_score > 30.
 
@@ -138,6 +236,7 @@ class ScanGmailJob implements ShouldQueue
 
             return [
                 'is_threat' => $result['is_threat'] ?? false,
+                'detection_layer' => 'Layer 3 (AI Analysis)',
                 'severity' => $result['severity'] ?? 'clean',
                 'risk_score' => $result['risk_score'] ?? 0,
                 'reason' => $result['reason'] ?? 'AI verification complete.',
