@@ -10,10 +10,11 @@ import InputLabel from '@/Components/InputLabel';
 import InputError from '@/Components/InputError';
 import {
     ShieldAlert, Mail, MessageSquare, Users, LayoutDashboard, UserPlus,
-    FileText, Calendar, TrendingUp, CheckCircle, Smartphone
+    FileText, Calendar, TrendingUp, CheckCircle, Smartphone, ShieldCheck
 } from 'lucide-react';
+import DomainManagerTab from './DomainManager';
 
-export default function AdminDashboard({ auth, threats, users, reportData, filters }) {
+export default function AdminDashboard({ auth, threats, users, reportData, filters, domains }) {
     // 👇 Active Tab State
     const { props } = usePage(); // Get page props to check for errors
 
@@ -95,6 +96,13 @@ export default function AdminDashboard({ auth, threats, users, reportData, filte
                                 className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-md transition-colors ${activeTab === 'reports' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
                             >
                                 <FileText className="w-5 h-5 mr-3" /> Reports & Analytics
+                            </button>
+
+                            <button
+                                onClick={() => setActiveTab('domains')}
+                                className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-md transition-colors ${activeTab === 'domains' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
+                            >
+                                <ShieldCheck className="w-5 h-5 mr-3" /> Whitelist Manager
                             </button>
                         </nav>
                     </div>
@@ -388,6 +396,9 @@ export default function AdminDashboard({ auth, threats, users, reportData, filte
                                 </div>
                             )}
                         </div>
+                    )}
+                    {activeTab === 'domains' && (
+                        <DomainManagerTab domains={domains} />
                     )}
                 </main>
             </div>

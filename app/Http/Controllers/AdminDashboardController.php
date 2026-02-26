@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\ScannedEmail;
 use App\Models\ScannedSms;
 use App\Models\User;
+use App\Models\WhitelistedDomain; // 👇 1. ADDED THIS IMPORT
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
@@ -132,11 +133,15 @@ class AdminDashboardController extends Controller
             }
         }
 
+        // 👇 2. ADDED THIS QUERY TO FETCH DOMAINS
+        $domains = WhitelistedDomain::orderBy('created_at', 'desc')->get();
+
         return Inertia::render('Admin/Dashboard', [
             'threats' => $emails,
             'users' => $orgUsers,
-            'reportData' => $reportData, // Now populated dynamically
-            'filters' => $request->only(['start_date', 'end_date']), // Pass filters back to frontend
+            'reportData' => $reportData,
+            'filters' => $request->only(['start_date', 'end_date']),
+            'domains' => $domains, // 👇 3. ADDED THIS SO REACT DOESN'T CRASH
         ]);
     }
 
@@ -160,6 +165,10 @@ class AdminDashboardController extends Controller
 
         return redirect()->back();
     }
+
+    // (Kept your commented out generateReport function intact below here...)
+
+
 
 //    public function generateReport(Request $request)
 //     {

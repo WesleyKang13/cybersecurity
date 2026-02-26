@@ -5,6 +5,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\SmsController;
 use App\Http\Controllers\AdminDashboardController;
+use App\Http\Controllers\DomainController;
 use App\Models\ScannedEmail;
 use App\Models\User;
 use App\Services\GmailService;
@@ -47,6 +48,11 @@ Route::middleware('auth')->group(function () {
 
     Route::get('/auth/redirect', [AuthController::class, 'redirect'])->name('google.connect');
     Route::get('/auth/callback', [AuthController::class, 'callback']);
+
+    Route::get('/domains', [DomainController::class, 'index'])->name('domains.index');
+    Route::post('/domains', [DomainController::class, 'store'])->name('domains.store');
+    Route::patch('/domains/{domain}', [DomainController::class, 'update'])->name('domains.update');
+    Route::delete('/domains/{domain}', [DomainController::class, 'destroy'])->name('domains.destroy');
 });
 
 require __DIR__.'/auth.php';

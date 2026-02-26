@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\User;
 use App\Models\ScannedEmail;
+use App\Models\WhitelistedDomain; // <-- ADDED
 use App\Services\GmailService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -13,6 +14,7 @@ use Illuminate\Queue\Middleware\RateLimited;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache; // <-- ADDED
 
 class ScanGmailJob implements ShouldQueue
 {
@@ -76,56 +78,13 @@ class ScanGmailJob implements ShouldQueue
     private function runSecurityFunnel($subject, $snippet, $sender, $senderDomain)
     {
         // ---------------------------------------------------------
-        // LAYER 1: THE WHITELIST (Known Good)
+        // LAYER 1: THE DYNAMIC WHITELIST (Cached for 1 hour)
         // ---------------------------------------------------------
-        $whitelist = [
-            // --- Developer & Cloud Tools ---
-            'github.com', 'gitlab.com', 'bitbucket.org', 'stackoverflow.com',
-            'koyeb.com', 'aws.amazon.com', 'digitalocean.com', 'cloudflare.com',
-            'vercel.com', 'netlify.com', 'heroku.com', 'docker.com', 'npmjs.com',
-            'sentry.io', 'datadoghq.com', 'postman.com',
-
-            // --- Productivity & Work ---
-            'slack.com', 'zoom.us', 'atlassian.com', 'trello.com', 'asana.com',
-            'monday.com', 'notion.so', 'dropbox.com', 'box.com', 'docusign.com',
-            'docusign.net', 'miro.com', 'figma.com', 'canva.com', 'calendly.com',
-            'hubspot.com', 'salesforce.com', 'zendesk.com', 'intercom.com',
-
-            // --- Social Media & Communication ---
-            'linkedin.com', 'twitter.com', 'x.com', 'facebookmail.com',
-            'instagram.com', 'pinterest.com', 'reddit.com', 'redditmail.com',
-            'discord.com', 'tiktok.com', 'snapchat.com', 'twitch.tv', 'vimeo.com',
-
-            // --- E-commerce & Delivery ---
-            'amazon.com', 'amazon.co.uk', 'ebay.com', 'ebay.co.uk', 'etsy.com',
-            'shopify.com', 'walmart.com', 'target.com', 'aliexpress.com',
-            'uber.com', 'ubereats.com', 'deliveroo.co.uk', 'deliveroo.ie',
-            'just-eat.ie', 'just-eat.co.uk', 'doordash.com', 'instacart.com',
-
-            // --- Finance, Banking & Payments ---
-            'paypal.com', 'stripe.com', 'squareup.com', 'revolut.com', 'monzo.com',
-            'chase.com', 'bankofamerica.com', 'americanexpress.com', 'discover.com',
-            'aib.ie', 'bankofireland.com', 'permanenttsb.ie', // Irish Banking
-
-            // --- Entertainment & Gaming ---
-            'netflix.com', 'spotify.com', 'hulu.com', 'disneyplus.com',
-            'steampowered.com', 'epicgames.com', 'ea.com', 'ubisoft.com',
-            'playstation.com', 'xbox.com', 'nintendo.com', 'roblox.com',
-
-            // --- Travel & Transport ---
-            'airbnb.com', 'booking.com', 'expedia.com', 'skyscanner.net',
-            'ryanair.com', 'aerlingus.com', 'aircoach.ie', 'britishairways.com',
-            'delta.com', 'united.com', 'americanairlines.com', 'lyft.com',
-            'irishrail.ie', 'dublinbus.ie',
-
-            // --- Tech Giants (Corporate communications only, NOT their public webmail) ---
-            'google.com', 'apple.com', 'microsoft.com', 'meta.com',
-
-            // --- News, Education & Government ---
-            'medium.com', 'quora.com', 'wikipedia.org', 'coursera.org', 'udemy.com',
-            'nytimes.com', 'bbc.co.uk', 'bbc.com', 'theguardian.com', 'wsj.com',
-            'revenue.ie', 'mygovid.ie', 'hse.ie', 'anpost.com'
-        ];
+        $whitelist = Cache::remember('trusted_domains', 3600, function () {
+            return WhitelistedDomain::where('is_active', true)
+                ->pluck('domain')
+                ->toArray();
+        });
 
         if (in_array($senderDomain, $whitelist)) {
             return [
@@ -142,21 +101,78 @@ class ScanGmailJob implements ShouldQueue
         // ---------------------------------------------------------
         $subjectLower = strtolower($subject);
         $snippetLower = strtolower($snippet);
+        // Combine them to make searching easier
+        $fullText = $subjectLower . ' ' . $snippetLower;
 
-        $publicProviders = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com'];
-        $urgentKeywords = ['urgent', 'suspend', 'immediate action', 'password reset', 'invoice', 'verify your account'];
+        // RULE A: Highly Suspicious Top-Level Domains (TLDs)
+        // Hackers buy these in bulk for $0.99 to send spam.
+        $suspiciousTlds = ['.xyz', '.top', '.click', '.buzz', '.monster', '.cc', '.su', '.ru'];
+        foreach ($suspiciousTlds as $tld) {
+            if (str_ends_with($senderDomain, $tld)) {
+                return [
+                    'is_threat' => true,
+                    'detection_layer' => 'Layer 2 (Heuristics)',
+                    'severity' => 'high',
+                    'risk_score' => 95,
+                    'reason' => "Manual Rule: Sender domain uses a highly suspicious extension ('{$tld}')."
+                ];
+            }
+        }
+
+        // RULE B: Public Provider Abuse (Urgency & Impersonation)
+        $publicProviders = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com', 'icloud.com', 'proton.me', 'mail.com'];
 
         if (in_array($senderDomain, $publicProviders)) {
+
+            // 1. The Urgency Check
+            $urgentKeywords = [
+                'urgent', 'suspend', 'immediate action', 'password reset', 'invoice',
+                'verify your account', 'unauthorized login', 'account limited', 'final notice', 'document attached'
+            ];
             foreach ($urgentKeywords as $keyword) {
-                if (str_contains($subjectLower, $keyword) || str_contains($snippetLower, $keyword)) {
+                if (str_contains($fullText, $keyword)) {
                     return [
                         'is_threat' => true,
                         'detection_layer' => 'Layer 2 (Heuristics)',
                         'severity' => 'high',
                         'risk_score' => 90,
-                        'reason' => "Manual Rule: Public provider ({$senderDomain}) using suspicious keyword: '{$keyword}'."
+                        'reason' => "Manual Rule: Public provider ({$senderDomain}) using suspicious urgency keyword: '{$keyword}'."
                     ];
                 }
+            }
+
+            // 2. The Brand Impersonation Check (e.g., 'Apple Support' sent from a @gmail.com address)
+            $impersonatedBrands = ['paypal', 'amazon', 'apple', 'microsoft', 'netflix', 'meta', 'facebook', 'bank', 'support'];
+            foreach ($impersonatedBrands as $brand) {
+                // We only check the subject here, as snippets often naturally mention brands
+                if (str_contains($subjectLower, $brand)) {
+                    return [
+                        'is_threat' => true,
+                        'detection_layer' => 'Layer 2 (Heuristics)',
+                        'severity' => 'high',
+                        'risk_score' => 95,
+                        'reason' => "Manual Rule: Public provider ({$senderDomain}) attempting to impersonate brand: '{$brand}'."
+                    ];
+                }
+            }
+        }
+
+        // RULE C: Known Scam & Extortion Phrases
+        // If an email makes it here, it is NOT whitelisted. If it contains these phrases, kill it instantly.
+        $scamPhrases = [
+            'bitcoin giveaway', 'wallet validation', 'seed phrase', 'guaranteed return',
+            'i have recorded you', 'webcam hacked', 'pay me in bitcoin', 'transfer funds immediately'
+        ];
+
+        foreach ($scamPhrases as $phrase) {
+            if (str_contains($fullText, strtolower($phrase))) {
+                return [
+                    'is_threat' => true,
+                    'detection_layer' => 'Layer 2 (Heuristics)',
+                    'severity' => 'high',
+                    'risk_score' => 99,
+                    'reason' => "Manual Rule: Detected known scam or extortion phrase: '{$phrase}'."
+                ];
             }
         }
 
@@ -168,7 +184,7 @@ class ScanGmailJob implements ShouldQueue
 
     private function analyzeWithGemini($subject, $snippet, $sender)
     {
-        $apiKey = env('GEMINI_API_KEY');;
+        $apiKey = env('GEMINI_API_KEY');
         $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={$apiKey}";
 
         $safeSubject = addslashes($subject);
@@ -206,10 +222,8 @@ class ScanGmailJob implements ShouldQueue
 
         try {
             // 3. RETRY LOGIC: Exponential Backoff
-            // Attempt 3 times. Wait 1s, then 2s, then 4s between tries.
             $response = retry(3, function () use ($url, $prompt) {
 
-                // Added 'withHeaders' for JSON content type
                 $res = Http::withHeaders(['Content-Type' => 'application/json'])
                     ->post($url, [
                         'contents' => [['parts' => [['text' => $prompt]]]],
@@ -244,7 +258,13 @@ class ScanGmailJob implements ShouldQueue
 
         } catch (\Exception $e) {
             Log::error("Gemini Analysis Failed after retries: " . $e->getMessage());
-            return ['is_threat' => false, 'severity' => 'clean', 'risk_score' => 0, 'reason' => 'AI unavailable'];
+            return [
+                'is_threat' => false,
+                'detection_layer' => 'Layer 3 (AI Error)',
+                'severity' => 'clean',
+                'risk_score' => 0,
+                'reason' => 'AI unavailable'
+            ];
         }
     }
 }
