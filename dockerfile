@@ -57,6 +57,8 @@ RUN echo "server { \
 
 # 8. Configure Supervisor
 # This runs Nginx, PHP-FPM, AND the Laravel Queue Worker at the same time
+# 8. Configure Supervisor
+# This runs Nginx, PHP-FPM, the Queue Worker, AND the Scheduler at the same time
 RUN echo "[supervisord] \n\
 nodaemon=true \n\
 [program:nginx] \n\
@@ -73,6 +75,12 @@ stderr_logfile=/dev/stderr \n\
 stderr_logfile_maxbytes=0 \n\
 [program:queue-worker] \n\
 command=php /var/www/html/artisan queue:work --sleep=3 --tries=3 --timeout=90 \n\
+stdout_logfile=/dev/stdout \n\
+stdout_logfile_maxbytes=0 \n\
+stderr_logfile=/dev/stderr \n\
+stderr_logfile_maxbytes=0 \n\
+[program:scheduler] \n\
+command=php /var/www/html/artisan schedule:work \n\
 stdout_logfile=/dev/stdout \n\
 stdout_logfile_maxbytes=0 \n\
 stderr_logfile=/dev/stderr \n\
