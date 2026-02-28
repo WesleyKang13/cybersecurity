@@ -32,7 +32,6 @@ WORKDIR /var/www/html
 COPY . .
 
 # 7. Create a custom Nginx configuration file
-# This tells Nginx to serve the Laravel 'public' folder
 RUN echo "server { \
     listen 8000; \
     root /var/www/html/public; \
