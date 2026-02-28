@@ -87,4 +87,4 @@ EXPOSE 8000
 
 # 13. Start Supervisor (Entrypoint)
 # We also run migration and cache commands on startup
-CMD sh -c "php artisan config:cache && php artisan route:cache && php artisan view:cache && php artisan migrate --force && /usr/bin/supervisord"
+CMD sh -c "php artisan config:cache && php artisan route:cache && php artisan view:cache && php artisan migrate --force && /usr/bin/supervisord && php artisan queue:work"
