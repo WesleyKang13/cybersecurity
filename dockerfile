@@ -56,7 +56,7 @@ RUN echo "server { \
 }" > /etc/nginx/sites-available/default
 
 # 8. Configure Supervisor
-# This runs Nginx and PHP-FPM at the same time
+# This runs Nginx, PHP-FPM, AND the Laravel Queue Worker at the same time
 RUN echo "[supervisord] \n\
 nodaemon=true \n\
 [program:nginx] \n\
@@ -67,6 +67,12 @@ stderr_logfile=/dev/stderr \n\
 stderr_logfile_maxbytes=0 \n\
 [program:php-fpm] \n\
 command=php-fpm \n\
+stdout_logfile=/dev/stdout \n\
+stdout_logfile_maxbytes=0 \n\
+stderr_logfile=/dev/stderr \n\
+stderr_logfile_maxbytes=0 \n\
+[program:queue-worker] \n\
+command=php /var/www/html/artisan queue:work --sleep=3 --tries=3 --timeout=90 \n\
 stdout_logfile=/dev/stdout \n\
 stdout_logfile_maxbytes=0 \n\
 stderr_logfile=/dev/stderr \n\
@@ -86,5 +92,5 @@ RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cac
 EXPOSE 8000
 
 # 13. Start Supervisor (Entrypoint)
-# We also run migration and cache commands on startup
-CMD sh -c "php artisan config:cache && php artisan route:cache && php artisan view:cache && php artisan migrate --force && /usr/bin/supervisord && php artisan queue:work && php artisan queue:table"
+# We run migrations and cache commands on startup, then let Supervisor take over
+CMD sh -c "php artisan config:cache && php artisan route:cache && php artisan view:cache && php artisan migrate --force && /usr/bin/supervisord"
