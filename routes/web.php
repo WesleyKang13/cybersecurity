@@ -49,3 +49,15 @@ Route::middleware('auth')->group(function () {
 });
 
 require __DIR__.'/auth.php';
+
+// JuST FOR TESTING
+use Illuminate\Support\Facades\Log;
+
+Route::get('/test-queue', function () {
+    // This pushes a generic job directly into your 'jobs' table
+    dispatch(function () {
+        Log::info('🎉 THE QUEUE WORKER IS ALIVE AND WORKING! 🎉');
+    });
+
+    return 'Dummy job sent to the database! Go check your Koyeb logs right now.';
+});
