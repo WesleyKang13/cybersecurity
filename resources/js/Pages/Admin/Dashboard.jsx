@@ -411,17 +411,52 @@ export default function AdminDashboard({ auth, threats, users, reportData, filte
             />
 
             <Modal show={showUserModal} onClose={() => setShowUserModal(false)} maxWidth="md">
-                {/* ... existing user form ... */}
-                 <div className="p-6">
+                <div className="p-6">
                     <h2 className="text-lg font-medium text-gray-900">Add New User</h2>
-                     <form onSubmit={submitUser}>
-                         {/* ... inputs ... */}
-                          <div className="flex justify-end mt-4">
-                            <SecondaryButton onClick={() => setShowUserModal(false)} className="mr-3">Cancel</SecondaryButton>
-                            <PrimaryButton disabled={processing}>Create User</PrimaryButton>
+
+                    <form onSubmit={submitUser} className="mt-4">
+                        {/* Name Field */}
+                        <div>
+                            <InputLabel htmlFor="name" value="Name" />
+                            <TextInput
+                                id="name"
+                                type="text"
+                                name="name"
+                                value={data.name}
+                                className="mt-1 block w-full"
+                                isFocused={true}
+                                onChange={(e) => setData('name', e.target.value)}
+                                required
+                            />
+                            <InputError message={errors.name} className="mt-2" />
                         </div>
-                     </form>
-                 </div>
+
+                        {/* Email Field */}
+                        <div className="mt-4">
+                            <InputLabel htmlFor="email" value="Email Address" />
+                            <TextInput
+                                id="email"
+                                type="email"
+                                name="email"
+                                value={data.email}
+                                className="mt-1 block w-full"
+                                onChange={(e) => setData('email', e.target.value)}
+                                required
+                            />
+                            <InputError message={errors.email} className="mt-2" />
+                        </div>
+
+                        {/* Submit & Cancel Buttons */}
+                        <div className="flex justify-end mt-6">
+                            <SecondaryButton onClick={() => setShowUserModal(false)} className="mr-3">
+                                Cancel
+                            </SecondaryButton>
+                            <PrimaryButton disabled={processing}>
+                                Create User
+                            </PrimaryButton>
+                        </div>
+                    </form>
+                </div>
             </Modal>
         </AuthenticatedLayout>
     );

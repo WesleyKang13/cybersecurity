@@ -14,7 +14,7 @@ use Illuminate\Queue\Middleware\RateLimited;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Cache; // <-- ADDED
+use Illuminate\Support\Facades\Cache;
 
 class ScanGmailJob implements ShouldQueue
 {
@@ -22,7 +22,7 @@ class ScanGmailJob implements ShouldQueue
 
     protected $user;
 
-    // 1. Tries: If the job fails (e.g., API is down), retry it 3 times max
+    // Tries: If the job fails (e.g., API is down), retry it 3 times max
     public $tries = 3;
 
     public function __construct(User $user)
@@ -30,7 +30,7 @@ class ScanGmailJob implements ShouldQueue
         $this->user = $user;
     }
 
-    // 2. MIDDLEWARE: The "Traffic Control"
+    // MIDDLEWARE: The "Traffic Control"
     public function middleware()
     {
         return [new RateLimited('gemini-api')];
