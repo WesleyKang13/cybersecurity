@@ -1,7 +1,7 @@
 import Modal from '@/Components/Modal';
 import SecondaryButton from '@/Components/SecondaryButton';
 import DangerButton from '@/Components/DangerButton';
-import { ShieldAlert, ShieldCheck, Mail, AlertTriangle } from 'lucide-react';
+import { ShieldAlert, ShieldCheck, AlertTriangle } from 'lucide-react'; // Removed Mail, added AlertTriangle
 
 export default function ThreatDetailModal({ show, onClose, email }) {
     console.log("Email data received by Modal:", email);
@@ -60,7 +60,7 @@ export default function ThreatDetailModal({ show, onClose, email }) {
 
                         {/* DYNAMIC VERDICT BOX - With Fallback for old null records */}
                         <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
-                            {safeEmail.detection_layer === 'Layer 1 (Whitelist)' || safeEmail.reason?.includes('Auto-cleared') ? (
+                            {safeEmail.detection_layer?.includes('Layer 1') || safeEmail.reason?.includes('Auto-cleared') ? (
                                 <div className="flex items-start">
                                     <ShieldCheck className="w-4 h-4 text-green-500 mt-0.5 mr-2 flex-shrink-0" />
                                     <div>
@@ -70,7 +70,18 @@ export default function ThreatDetailModal({ show, onClose, email }) {
                                         </p>
                                     </div>
                                 </div>
-                            ) : safeEmail.detection_layer === 'Layer 2 (Heuristics)' || safeEmail.reason?.includes('Manual Rule') ? (
+                            ) : safeEmail.detection_layer?.includes('Layer 2.5 (VirusTotal API)') ? (
+                                // 👇 THE NEW LAYER 2.5 VIRUSTOTAL LOGIC
+                                <div className="flex items-start">
+                                    <AlertTriangle className="w-4 h-4 text-purple-500 mt-0.5 mr-2 flex-shrink-0" />
+                                    <div>
+                                        <span className="text-xs font-bold text-purple-600 uppercase block mb-1">Sandbox Verdict (Layer 2.5)</span>
+                                        <p className="text-sm font-medium text-purple-700 dark:text-purple-400">
+                                            🦠 {safeEmail.reason}
+                                        </p>
+                                    </div>
+                                </div>
+                            ) : safeEmail.detection_layer?.includes('Layer 2') || safeEmail.reason?.includes('Manual Rule') ? (
                                 <div className="flex items-start">
                                     <ShieldAlert className="w-4 h-4 text-red-500 mt-0.5 mr-2 flex-shrink-0" />
                                     <div>

@@ -49,6 +49,7 @@ class DashboardController extends Controller
                 'date' => $e->created_at->diffForHumans(),
                 'snippet' => $e->snippet,
                 'reason' => $e->reason ?? $e->explanation ?? 'Analysis pending...',
+                'detection_layer' => $e->detection_layer,
                 'is_quarantined' => $e->is_quarantined
             ]));
         }
