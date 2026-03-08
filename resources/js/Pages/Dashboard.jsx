@@ -102,10 +102,16 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                     )}
 
                     {/* Connection Status Bar */}
-                    <div className="bg-white dark:bg-gray-800 overflow-hidden shadow-sm sm:rounded-lg p-6 border-l-4 border-indigo-500 flex justify-between items-center">
+                    <div className="bg-white dark:bg-gray-800 overflow-hidden shadow-sm sm:rounded-lg p-6 border-l-4 border-indigo-500 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                         <div>
-                            <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100">
+                            <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 flex items-center gap-2">
                                 {isConnected ? 'Workspace Active' : 'Limited Protection'}
+                                {/* 👇 Auto-Quarantine Badge */}
+                                {isConnected && auth.user.auto_quarantine && (
+                                    <span className="bg-red-100 text-red-800 text-xs font-bold px-2 py-0.5 rounded uppercase tracking-wide">
+                                        Active Defense ON
+                                    </span>
+                                )}
                             </h3>
                             <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
                                 {isConnected
@@ -113,7 +119,30 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                                     : 'Connect Google Workspace to enable Email scanning. SMS scanning is active.'}
                             </p>
                         </div>
-                        <div>
+                        <div className="flex items-center gap-4">
+                            {/* 👇 The Kill Switch (Only show if connected) */}
+                            {isConnected && (
+                                <label className="flex items-center cursor-pointer">
+                                    <div className="relative">
+                                        <input
+                                            type="checkbox"
+                                            className="sr-only"
+                                            checked={auth.user.auto_quarantine}
+                                            onChange={(e) => {
+                                                if(confirm(e.target.checked ? "Enable Active Defense? High-risk emails will be moved to SPAM automatically." : "Disable Active Defense?")) {
+                                                    router.post(route('settings.quarantine.toggle'), { auto_quarantine: e.target.checked }, { preserveScroll: true });
+                                                }
+                                            }}
+                                        />
+                                        <div className={`block w-14 h-8 rounded-full transition-colors ${auth.user.auto_quarantine ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-600'}`}></div>
+                                        <div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition-transform ${auth.user.auto_quarantine ? 'transform translate-x-6' : ''}`}></div>
+                                    </div>
+                                    <div className="ml-3 text-sm font-medium text-gray-700 dark:text-gray-300">
+                                        Auto-Quarantine
+                                    </div>
+                                </label>
+                            )}
+
                             {!isConnected ? (
                                 <a href={route('google.connect')} className="inline-flex items-center px-4 py-2 bg-indigo-600 border border-transparent rounded-md font-semibold text-xs text-white uppercase tracking-widest hover:bg-indigo-500 transition">
                                     <Plus className="w-4 h-4 mr-2" /> Connect Google
@@ -265,6 +294,15 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                                                         }`}>
                                                             {alert.is_threat ? 'THREAT' : 'SAFE'}
                                                         </span>
+
+                                                        {alert.is_quarantined && (
+                                                            <span
+                                                                className="px-3 ms-1 py-1 inline-flex items-center gap-2 text-[10px] leading-4 font-bold rounded bg-orange-100 text-orange-800 border border-orange-200 uppercase tracking-wider shadow-sm"
+                                                                title="This email was automatically moved to the SPAM folder."
+                                                            >
+                                                                🛡️ Quarantined
+                                                            </span>
+                                                        )}
                                                     </td>
 
                                                     <td className="px-6 py-4 whitespace-nowrap align-middle">

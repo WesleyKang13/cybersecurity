@@ -19,7 +19,8 @@ class ScannedEmail extends Model
         'detection_layer',
         'severity',
         'reason',
-        'risk_score'
+        'risk_score',
+        'is_quarantined'
     ];
 
     // Link back to the User
