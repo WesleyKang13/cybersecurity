@@ -166,96 +166,35 @@ class AdminDashboardController extends Controller
         return redirect()->back();
     }
 
-    // (Kept your commented out generateReport function intact below here...)
+    // Function to Edit/Update a User
+    public function updateUser(Request $request, User $user)
+    {
+        $admin = Auth::user();
 
+        // 1. Security Check: Only admins can edit, and only users in their organization
+        if ($admin->role !== 'admin' || $user->organization_id !== $admin->organization_id) {
+            abort(403, 'Unauthorized action.');
+        }
 
+        // 2. Validate input
+        $validated = $request->validate([
+            'name' => 'required|string|max:255',
+            // Ensure unique email, but ignore the current user's email
+            'email' => ['required', 'string', 'email', 'max:255', \Illuminate\Validation\Rule::unique('users')->ignore($user->id)],
+            'role' => 'required|string|in:user,admin',
+            'password' => 'nullable|string|min:8',
+        ]);
 
-//    public function generateReport(Request $request)
-//     {
-//         $request->validate([
-//             'start_date' => 'required|date',
-//             'end_date' => 'required|date|after_or_equal:start_date',
-//         ]);
+        // 3. Handle optional password update
+        if ($request->filled('password')) {
+            $validated['password'] = Hash::make($validated['password']);
+        } else {
+            unset($validated['password']);
+        }
 
-//         $start = Carbon::parse($request->start_date)->startOfDay();
-//         $end = Carbon::parse($request->end_date)->endOfDay();
+        // 4. Update the user
+        $user->update($validated);
 
-//         // --- 1. Global Email Stats ---
-//         $totalEmails = ScannedEmail::whereBetween('created_at', [$start, $end])->count();
-
-//         $totalEmailThreats = ScannedEmail::whereBetween('created_at', [$start, $end])
-//             ->where('is_threat', true)
-//             ->count();
-
-//         // 👇 NEW: Explicitly count "Verified Safe" items
-//         $verifiedSafe = ScannedEmail::withTrashed() // Include deleted if you soft-delete them
-//             ->whereBetween('created_at', [$start, $end])
-//             ->where('severity', 'verified') // The specific flag you requested
-//             ->count();
-
-//         // --- 2. Global SMS Stats ---
-//         $totalSms = ScannedSms::whereBetween('created_at', [$start, $end])->count();
-//         $totalSmsThreats = ScannedSms::whereBetween('created_at', [$start, $end])
-//             ->where('is_threat', true)
-//             ->count();
-
-//         // --- 3. User Breakdown Loop ---
-//         $allUsers = User::all();
-//         $userStats = [];
-
-//         foreach ($allUsers as $user) {
-//             $userEmailCount = ScannedEmail::where('user_id', $user->id)
-//                 ->whereBetween('created_at', [$start, $end])
-//                 ->count();
-
-//             $userThreatCount = ScannedEmail::where('user_id', $user->id)
-//                 ->whereBetween('created_at', [$start, $end])
-//                 ->where('is_threat', true)
-//                 ->count();
-
-//             // 👇 NEW: Count Verified Safe for this specific user
-//             $userVerifiedCount = ScannedEmail::withTrashed()
-//                 ->where('user_id', $user->id)
-//                 ->whereBetween('created_at', [$start, $end])
-//                 ->where('severity', 'verified')
-//                 ->count();
-
-//             if ($userEmailCount > 0) {
-//                 $userStats[] = [
-//                     'name' => $user->name,
-//                     'email_count' => $userEmailCount,
-//                     'threat_count' => $userThreatCount,
-//                     'verified_count' => $userVerifiedCount, // Pass this to frontend
-//                 ];
-//             }
-//         }
-
-//         // --- 4. Protection Score ---
-//         $totalItems = $totalEmails + $totalSms;
-//         $totalThreats = $totalEmailThreats + $totalSmsThreats;
-
-//         $protectionScore = 100;
-//         if ($totalItems > 0) {
-//             $protectionScore = round((($totalItems - $totalThreats) / $totalItems) * 100, 1);
-//         }
-
-//         return Inertia::render('Admin/Dashboard', [
-//             'threats' => ScannedEmail::where('is_threat', true)->limit(5)->get(),
-//             'users' => User::all(),
-//             'reportData' => [
-//                 'date_range' => $start->format('M d') . ' - ' . $end->format('M d, Y'),
-//                 'email_stats' => [
-//                     'total' => $totalEmails,
-//                     'threats' => $totalEmailThreats,
-//                     'verified_safe' => $verifiedSafe, // Updated variable
-//                 ],
-//                 'sms_stats' => [
-//                     'total' => $totalSms,
-//                     'threats' => $totalSmsThreats,
-//                 ],
-//                 'user_breakdown' => $userStats,
-//                 'protection_score' => $protectionScore
-//             ]
-//         ]);
-//     }
+        return redirect()->back();
+    }
 }

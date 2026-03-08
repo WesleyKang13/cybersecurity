@@ -30,6 +30,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('/admin/dashboard', [AdminDashboardController::class, 'index'])
             ->name('admin.dashboard');
     Route::post('/admin/users', [AdminDashboardController::class, 'storeUser'])->name('admin.users.store');
+    Route::put('/admin/users/{user}', [AdminDashboardController::class, 'updateUser'])->name('admin.users.update');
     //Route::post('/admin/reports', [AdminDashboardController::class, 'generateReport'])->name('admin.reports.generate');
 
 });

@@ -30,9 +30,16 @@ export default function AdminDashboard({ auth, threats, users, reportData, filte
     const [showThreatModal, setShowThreatModal] = useState(false);
     const [showUserModal, setShowUserModal] = useState(false);
 
+    const [showEditUserModal, setShowEditUserModal] = useState(false);
+    const [editingUser, setEditingUser] = useState(null);
+
     // Form: Add User
     const { data, setData, post, processing, reset, errors } = useForm({
         name: '', email: '',
+    });
+
+    const editForm = useForm({
+        id: '', name: '', email: '', role: '', password: ''
     });
 
     const openThreatModal = (threat) => {
@@ -44,6 +51,29 @@ export default function AdminDashboard({ auth, threats, users, reportData, filte
         e.preventDefault();
         post(route('admin.users.store'), {
             onSuccess: () => { setShowUserModal(false); reset(); },
+        });
+    };
+
+    const openEditUserModal = (user) => {
+        setEditingUser(user);
+        editForm.setData({
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            role: user.role || 'user',
+            password: '', // Always start password empty on edit
+        });
+        setShowEditUserModal(true);
+    };
+
+    const submitEditUser = (e) => {
+        e.preventDefault();
+        // Uses the PUT method pointing to a new update route
+        editForm.put(route('admin.users.update', editingUser.id), {
+            onSuccess: () => {
+                setShowEditUserModal(false);
+                editForm.reset('password');
+            },
         });
     };
 
@@ -243,7 +273,12 @@ export default function AdminDashboard({ auth, threats, users, reportData, filte
                                                         {new Date(user.created_at).toLocaleDateString()}
                                                     </td>
                                                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                                        <button className="text-indigo-600 hover:text-indigo-900">Edit</button>
+                                                        <button
+                                                            onClick={() => openEditUserModal(user)}
+                                                            className="text-indigo-600 hover:text-indigo-900"
+                                                        >
+                                                            Edit
+                                                        </button>
                                                     </td>
                                                 </tr>
                                             ))
@@ -453,6 +488,78 @@ export default function AdminDashboard({ auth, threats, users, reportData, filte
                             </SecondaryButton>
                             <PrimaryButton disabled={processing}>
                                 Create User
+                            </PrimaryButton>
+                        </div>
+                    </form>
+                </div>
+            </Modal>
+            <Modal show={showEditUserModal} onClose={() => setShowEditUserModal(false)} maxWidth="md">
+                <div className="p-6">
+                    <h2 className="text-lg font-medium text-gray-900">Edit User: {editingUser?.name}</h2>
+
+                    <form onSubmit={submitEditUser} className="mt-4">
+                        {/* Name */}
+                        <div>
+                            <InputLabel htmlFor="edit_name" value="Name" />
+                            <TextInput
+                                id="edit_name"
+                                type="text"
+                                value={editForm.data.name}
+                                className="mt-1 block w-full"
+                                onChange={(e) => editForm.setData('name', e.target.value)}
+                                required
+                            />
+                            <InputError message={editForm.errors.name} className="mt-2" />
+                        </div>
+
+                        {/* Email */}
+                        <div className="mt-4">
+                            <InputLabel htmlFor="edit_email" value="Email Address" />
+                            <TextInput
+                                id="edit_email"
+                                type="email"
+                                value={editForm.data.email}
+                                className="mt-1 block w-full"
+                                onChange={(e) => editForm.setData('email', e.target.value)}
+                                required
+                            />
+                            <InputError message={editForm.errors.email} className="mt-2" />
+                        </div>
+
+                        {/* Role */}
+                        <div className="mt-4">
+                            <InputLabel htmlFor="edit_role" value="User Role" />
+                            <select
+                                id="edit_role"
+                                value={editForm.data.role}
+                                onChange={(e) => editForm.setData('role', e.target.value)}
+                                className="mt-1 block w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm"
+                            >
+                                <option value="user">Standard User</option>
+                                <option value="admin">Administrator</option>
+                            </select>
+                            <InputError message={editForm.errors.role} className="mt-2" />
+                        </div>
+
+                        {/* Password (Optional) */}
+                        <div className="mt-4">
+                            <InputLabel htmlFor="edit_password" value="New Password (leave blank to keep current)" />
+                            <TextInput
+                                id="edit_password"
+                                type="password"
+                                value={editForm.data.password}
+                                className="mt-1 block w-full"
+                                onChange={(e) => editForm.setData('password', e.target.value)}
+                            />
+                            <InputError message={editForm.errors.password} className="mt-2" />
+                        </div>
+
+                        <div className="flex justify-end mt-6">
+                            <SecondaryButton onClick={() => setShowEditUserModal(false)} className="mr-3">
+                                Cancel
+                            </SecondaryButton>
+                            <PrimaryButton disabled={editForm.processing}>
+                                Save Changes
                             </PrimaryButton>
                         </div>
                     </form>
