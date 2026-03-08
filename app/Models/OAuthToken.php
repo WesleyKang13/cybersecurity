@@ -21,6 +21,7 @@ class OAuthToken extends Model
         'access_token' => 'encrypted',
         'refresh_token' => 'encrypted',
         'expires_at' => 'datetime',
+        'is_quarantined' => 'boolean'
     ];
 
     public function user()

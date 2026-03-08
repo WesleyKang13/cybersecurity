@@ -24,9 +24,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     Route::get('/sms-scanner', [SmsController::class, 'index'])->name('sms.index');
     Route::post('/sms-analyze', [SmsController::class, 'analyze'])->name('sms.analyze');
-});
 
-Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('/admin/dashboard', [AdminDashboardController::class, 'index'])
             ->name('admin.dashboard');
     Route::post('/admin/users', [AdminDashboardController::class, 'storeUser'])->name('admin.users.store');
@@ -47,6 +45,12 @@ Route::middleware('auth')->group(function () {
     Route::post('/domains', [DomainController::class, 'store'])->name('domains.store');
     Route::patch('/domains/{domain}', [DomainController::class, 'update'])->name('domains.update');
     Route::delete('/domains/{domain}', [DomainController::class, 'destroy'])->name('domains.destroy');
+
+    Route::post('/settings/toggle-quarantine', function (\Illuminate\Http\Request $request) {
+        $user = \Illuminate\Support\Facades\Auth::user();
+        $user->update(['auto_quarantine' => $request->boolean('auto_quarantine')]);
+        return back()->with('success', 'Auto-Quarantine settings updated.');
+    })->name('settings.quarantine.toggle');
 });
 
 require __DIR__.'/auth.php';

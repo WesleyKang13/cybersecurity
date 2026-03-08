@@ -33,6 +33,7 @@ return [
         'redirect' => env('GOOGLE_REDIRECT_URI'),
         // These scopes allow us to read emails securely
         'scopes' => [
+            'https://www.googleapis.com/auth/gmail.modify',
             'https://www.googleapis.com/auth/userinfo.email',
             'https://www.googleapis.com/auth/userinfo.profile',
             'https://www.googleapis.com/auth/gmail.readonly',

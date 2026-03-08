@@ -23,7 +23,8 @@ class User extends Authenticatable
         'password',
         'company_id',
         'role',
-        'token'
+        'token',
+        'auto_quarantine',
     ];
 
     /**

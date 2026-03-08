@@ -60,7 +60,7 @@ class ScanGmailJob implements ShouldQueue
             // PASS TO THE SECURITY FUNNEL (Whitelist -> Rules -> AI)
             $analysis = $this->runSecurityFunnel($email['subject'], $email['snippet'], $email['from'], $senderDomain);
 
-            ScannedEmail::create([
+            $scannedEmail = ScannedEmail::create([
                 'user_id' => $this->user->id,
                 'google_message_id' => $email['id'],
                 'subject' => $email['subject'],
@@ -72,6 +72,37 @@ class ScanGmailJob implements ShouldQueue
                 'risk_score' => $analysis['risk_score'],
                 'reason' => $analysis['reason'] ?? null,
             ]);
+
+            // ---------------------------------------------------------
+            // 🛡️ THE ACTIVE DEFENSE: AUTO-QUARANTINE
+            // ---------------------------------------------------------
+            // Check if the email is highly dangerous AND the user turned the feature ON
+            if ($analysis['risk_score'] >= 90 && $this->user->auto_quarantine) {
+                try {
+                    // Extract the access token (Depends on how you cast the token column, usually string or array)
+                    $accessToken = is_array($this->user->token) ? $this->user->token['access_token'] ?? $this->user->token : $this->user->token;
+
+                    // Tell Google to yank it out of the Inbox and drop it in Spam
+                    $response = Http::withToken($accessToken)
+                        ->post("https://gmail.googleapis.com/gmail/v1/users/me/messages/{$email['id']}/modify", [
+                            'addLabelIds' => ['SPAM'],
+                            'removeLabelIds' => ['INBOX']
+                        ]);
+
+                    if ($response->successful()) {
+                        Log::info("🛡️ Active Defense: Quarantined Email {$email['id']} for User {$this->user->id}");
+
+                        // Optional: You could update the ScannedEmail to record that it was quarantined
+                        $scannedEmail->update(['is_quarantined' => true]);
+                        // $scannedEmail->update(['reason' => $scannedEmail->reason . ' [AUTO-QUARANTINED]']);
+                    } else {
+                        Log::error("Failed to auto-quarantine: " . $response->body());
+                    }
+                } catch (\Exception $e) {
+                    Log::error("Auto-Quarantine Exception: " . $e->getMessage());
+                }
+            }
+
         }
     }
 
