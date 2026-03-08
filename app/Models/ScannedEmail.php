@@ -23,6 +23,14 @@ class ScannedEmail extends Model
         'is_quarantined'
     ];
 
+    protected $casts = [
+        'is_threat' => 'boolean',
+        'is_quarantined' => 'boolean',
+        'subject' => 'encrypted',
+        'sender' => 'encrypted',
+        'snippet' => 'encrypted',
+    ];
+
     // Link back to the User
     public function user()
     {

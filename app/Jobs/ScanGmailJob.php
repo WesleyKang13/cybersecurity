@@ -4,8 +4,9 @@ namespace App\Jobs;
 
 use App\Models\User;
 use App\Models\ScannedEmail;
-use App\Models\WhitelistedDomain; // <-- ADDED
+use App\Models\WhitelistedDomain;
 use App\Services\GmailService;
+use App\Services\VirusTotalService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -205,6 +206,22 @@ class ScanGmailJob implements ShouldQueue
                     'reason' => "Manual Rule: Detected known scam or extortion phrase: '{$phrase}'."
                 ];
             }
+        }
+
+        // ---------------------------------------------------------
+        // LAYER 2.5: VIRUSTOTAL DEEP-LINK SANDBOX 🦠
+        // ---------------------------------------------------------
+        $vtService = new VirusTotalService();
+        $vtResult = $vtService->scanFirstUrl($fullText);
+
+        if ($vtResult && $vtResult->is_malicious) {
+            return [
+                'is_threat' => true,
+                'detection_layer' => 'Layer 2.5 (VirusTotal API)',
+                'severity' => 'high',
+                'risk_score' => 100,
+                'reason' => "VirusTotal detected malware! {$vtResult->malicious_votes} security vendors flagged the link: {$vtResult->url}",
+            ];
         }
 
         // ---------------------------------------------------------
