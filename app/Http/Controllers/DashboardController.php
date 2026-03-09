@@ -101,7 +101,7 @@ class DashboardController extends Controller
         $user = Auth::user();
 
         // polish id
-        $id = substr($id, -1);
+        $id = str_replace(['email_', 'sms_'], '', $id);
 
         if ($source === 'email') {
             $record = ScannedEmail::where('user_id', $user->id)->findOrFail($id);
@@ -119,7 +119,7 @@ class DashboardController extends Controller
         $user = Auth::user();
 
         // polish id
-        $id = substr($id, -1);
+        $id = str_replace(['email_', 'sms_'], '', $id);
 
         if ($source === 'email') {
             $record = ScannedEmail::where('user_id', $user->id)->findOrFail($id);
