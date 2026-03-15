@@ -163,7 +163,7 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                                     <Mail className="h-6 w-6" />
                                 </div>
                                 <div className="ml-4">
-                                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Emails Scanned</p>
+                                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Emails Scanned Up To Last 14 Days</p>
                                     <p className="text-2xl font-semibold text-gray-900 dark:text-gray-100">{statsData.emails_scanned}</p>
                                 </div>
                             </div>
