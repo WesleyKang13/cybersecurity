@@ -27,7 +27,7 @@ class SmsController extends Controller
         $message = $request->input('message');
 
         // Ensure this matches your config/services.php setup
-        $apiKey = env('GEMINI_API_KEY');
+        $apiKey = config('services.gemini.key');
 
         if (empty($apiKey)) {
             return response()->json(['error' => 'Server Error: GEMINI_API_KEY is missing.'], 500);

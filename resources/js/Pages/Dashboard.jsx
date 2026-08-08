@@ -1,45 +1,61 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
-import { Head, usePage, Link, useForm, router } from '@inertiajs/react';
-import { ShieldAlert, ShieldCheck, Mail, Smartphone, Plus, CheckCircle, XCircle, LogOut, Search, ChevronLeft, ChevronRight } from 'lucide-react';
-import { useState, useEffect } from 'react';
 import ThreatDetailModal from '@/Pages/Partials/ThreatDetailModal';
+import { Head, Link, router, usePage } from '@inertiajs/react';
+import {
+    CheckCircle,
+    ChevronLeft,
+    ChevronRight,
+    LogOut,
+    Mail,
+    Plus,
+    Search,
+    ShieldAlert,
+    ShieldCheck,
+    Smartphone,
+    XCircle,
+} from 'lucide-react';
+import { useEffect, useState } from 'react';
 
-export default function Dashboard({ auth, initialStats, isConnected, recentAlerts, filter }) {
+const GOOGLE_RECONNECT_MESSAGE = 'Google connection expired or revoked. Please reconnect manually.';
+
+export default function Dashboard({ auth, initialStats, recentAlerts, filter, isGmailConnected }) {
     const { flash } = usePage().props;
-    const { post } = useForm();
-
     const statsData = initialStats || { emails_scanned: 0, sms_scanned: 0, threats: 0, protected: 1 };
 
     const [selectedEmail, setSelectedEmail] = useState(null);
     const [showModal, setShowModal] = useState(false);
-
-    // --- DATATABLE STATE ---
     const [searchTerm, setSearchTerm] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
-    // 👇 Now a state variable so the user can change it
     const [itemsPerPage, setItemsPerPage] = useState(50);
+    const [connectionError, setConnectionError] = useState('');
+    const [autoQuarantineEnabled, setAutoQuarantineEnabled] = useState(Boolean(auth.user.auto_quarantine));
+    const [updatingAutoQuarantine, setUpdatingAutoQuarantine] = useState(false);
 
-    // --- AUTO REFRESH LOGIC ---
+    const gmailProtectionActive = Boolean(isGmailConnected);
+
     useEffect(() => {
-        const interval = setInterval(() => {
-            router.reload({
-                only: ['recentAlerts', 'initialStats'],
-                preserveState: true,
-                preserveScroll: true,
-            });
-        }, 60000);
-        return () => clearInterval(interval);
-    }, []);
+        setAutoQuarantineEnabled(Boolean(auth.user.auto_quarantine));
+    }, [auth.user.auto_quarantine]);
 
-    // --- RESET PAGINATION ON SEARCH OR ROW COUNT CHANGE ---
     useEffect(() => {
         setCurrentPage(1);
     }, [searchTerm, itemsPerPage]);
 
-    // --- DATATABLE LOGIC (FILTERING & PAGINATION) ---
+    useEffect(() => {
+        const reloadInterval = window.setInterval(() => {
+            window.location.reload();
+        }, 10 * 60 * 1000);
+
+        return () => window.clearInterval(reloadInterval);
+    }, []);
+
     const filteredAlerts = (recentAlerts || []).filter((alert) => {
-        if (!searchTerm) return true;
+        if (!searchTerm) {
+            return true;
+        }
+
         const searchLower = searchTerm.toLowerCase();
+
         return (
             (alert.subject && alert.subject.toLowerCase().includes(searchLower)) ||
             (alert.sender && alert.sender.toLowerCase().includes(searchLower)) ||
@@ -65,22 +81,67 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
         setTimeout(() => setSelectedEmail(null), 300);
     };
 
-    const handleDisconnect = () => {
-        if (confirm('Are you sure you want to disconnect? Your emails will not be scanned once disconnected')) {
-            post(route('google.disconnect'));
+    const handleDisconnect = async () => {
+        if (!confirm('Disconnect Gmail and clear the encrypted background connection?')) {
+            return;
         }
+
+        router.post(route('google.disconnect'), {}, {
+            preserveScroll: true,
+            preserveState: true,
+            onSuccess: () => {
+                setConnectionError('');
+            },
+            onError: (errors) => {
+                const backendMessage =
+                    errors?.message ||
+                    'The server could not clear the Google connection.';
+
+                setConnectionError(backendMessage);
+            },
+        });
     };
 
     const handleMarkSafe = (id, source) => {
-        if (confirm("Mark this item as safe? It will be removed from the threat list.")) {
+        if (confirm('Mark this item as safe? It will be removed from the threat list.')) {
             router.post(route('scan.mark-safe', { id, source }));
         }
     };
 
     const handleDelete = (id, source) => {
-        if (confirm("Note: This will only remove the email from your dashboard and not in your gmail inbox. Proceed to delete?")) {
+        if (confirm('Note: This only removes the alert from the dashboard. Proceed to delete?')) {
             router.delete(route('scan.delete', { id, source }));
         }
+    };
+
+    const handleAutoQuarantineToggle = () => {
+        const nextValue = !autoQuarantineEnabled;
+
+        setAutoQuarantineEnabled(nextValue);
+        setUpdatingAutoQuarantine(true);
+
+        router.post(
+            route('settings.quarantine.toggle'),
+            {
+                auto_quarantine: nextValue,
+            },
+            {
+                preserveScroll: true,
+                preserveState: true,
+                onError: () => {
+                    setAutoQuarantineEnabled(!nextValue);
+                },
+                onSuccess: (page) => {
+                    const updatedValue = page.props?.auth?.user?.auto_quarantine;
+                    if (typeof updatedValue === 'boolean') {
+                        setAutoQuarantineEnabled(updatedValue);
+                    }
+                },
+                onFinish: () => {
+                    setUpdatingAutoQuarantine(false);
+                },
+            }
+        );
     };
 
     return (
@@ -92,8 +153,6 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
 
             <div className="py-12">
                 <div className="max-w-7xl mx-auto sm:px-6 lg:px-8 space-y-6">
-
-                    {/* Flash Messages */}
                     {flash.success && (
                         <div className="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded flex items-center">
                             <CheckCircle className="w-5 h-5 mr-2" />
@@ -101,63 +160,98 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                         </div>
                     )}
 
-                    {/* Connection Status Bar */}
-                    <div className="bg-white dark:bg-gray-800 overflow-hidden shadow-sm sm:rounded-lg p-6 border-l-4 border-indigo-500 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                        <div>
-                            <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 flex items-center gap-2">
-                                {isConnected ? 'Workspace Active' : 'Limited Protection'}
-                                {/* 👇 Auto-Quarantine Badge */}
-                                {isConnected && auth.user.auto_quarantine && (
-                                    <span className="bg-red-100 text-red-800 text-xs font-bold px-2 py-0.5 rounded uppercase tracking-wide">
-                                        Active Defense ON
-                                    </span>
-                                )}
-                            </h3>
-                            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                                {isConnected
-                                    ? 'System is currently monitoring your Emails and SMS.'
-                                    : 'Connect Google Workspace to enable Email scanning. SMS scanning is active.'}
-                            </p>
+                    {flash.error && (
+                        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
+                            {flash.error}
                         </div>
-                        <div className="flex items-center gap-4">
-                            {/* 👇 The Kill Switch (Only show if connected) */}
-                            {isConnected && (
-                                <label className="flex items-center cursor-pointer">
-                                    <div className="relative">
-                                        <input
-                                            type="checkbox"
-                                            className="sr-only"
-                                            checked={auth.user.auto_quarantine}
-                                            onChange={(e) => {
-                                                if(confirm(e.target.checked ? "Enable Active Defense? High-risk emails will be moved to SPAM automatically." : "Disable Active Defense?")) {
-                                                    router.post(route('settings.quarantine.toggle'), { auto_quarantine: e.target.checked }, { preserveScroll: true });
-                                                }
-                                            }}
-                                        />
-                                        <div className={`block w-14 h-8 rounded-full transition-colors ${auth.user.auto_quarantine ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-600'}`}></div>
-                                        <div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition-transform ${auth.user.auto_quarantine ? 'transform translate-x-6' : ''}`}></div>
-                                    </div>
-                                    <div className="ml-3 text-sm font-medium text-gray-700 dark:text-gray-300">
-                                        Auto-Quarantine
-                                    </div>
-                                </label>
-                            )}
+                    )}
 
-                            {!isConnected ? (
-                                <a href={route('google.connect')} className="inline-flex items-center px-4 py-2 bg-indigo-600 border border-transparent rounded-md font-semibold text-xs text-white uppercase tracking-widest hover:bg-indigo-500 transition">
-                                    <Plus className="w-4 h-4 mr-2" /> Connect Google
-                                </a>
-                            ) : (
-                                <button onClick={handleDisconnect} className="inline-flex items-center px-4 py-2 bg-red-100 border border-transparent rounded-md font-semibold text-xs text-red-700 uppercase tracking-widest hover:bg-red-200 transition">
-                                    <LogOut className="w-4 h-4 mr-2" /> Disconnect
+                    <div className="bg-white dark:bg-gray-800 overflow-hidden shadow-sm sm:rounded-lg p-6 border-l-4 border-indigo-500 flex flex-col gap-4">
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                            <div>
+                                <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100">
+                                    {gmailProtectionActive ? 'Gmail Protection Active' : 'Reconnect Gmail Required'}
+                                </h3>
+                                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                                    {gmailProtectionActive
+                                        ? 'Your account is securely connected with encrypted background scanning and automated threat protection.'
+                                        : 'The background connection to Google was lost or revoked. Reconnect your account to resume automated background scanning.'}
+                                </p>
+                            </div>
+
+                            <div className="flex items-center gap-3">
+                                {!gmailProtectionActive ? (
+                                    <a
+                                        href={route('google.connect')}
+                                        className="inline-flex items-center px-4 py-2 bg-indigo-600 border border-transparent rounded-md font-semibold text-xs text-white uppercase tracking-widest hover:bg-indigo-500 transition"
+                                    >
+                                        <Plus className="w-4 h-4 mr-2" /> Reconnect Gmail
+                                    </a>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={handleDisconnect}
+                                        className="inline-flex items-center px-4 py-2 bg-red-100 border border-transparent rounded-md font-semibold text-xs text-red-700 uppercase tracking-widest hover:bg-red-200 transition"
+                                    >
+                                        <LogOut className="w-4 h-4 mr-2" /> Disconnect
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+
+                        {!gmailProtectionActive ? (
+                            <div className="text-sm text-red-700 bg-red-50 border border-red-100 rounded px-3 py-2">
+                                {GOOGLE_RECONNECT_MESSAGE}
+                            </div>
+                        ) : connectionError && (
+                            <div className="text-sm text-red-700 bg-red-50 border border-red-100 rounded px-3 py-2">
+                                {connectionError}
+                            </div>
+                        )}
+
+                        <div className="rounded-xl border border-gray-200 bg-gray-50/80 p-4 dark:border-gray-700 dark:bg-gray-900/50">
+                            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                                <div className="space-y-1">
+                                    <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                                        Auto Quarantine
+                                    </h4>
+                                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                                        Automatically move emails with a risk score of 90 or higher into Gmail Spam and send a threat alert after the background scan runs.
+                                    </p>
+                                </div>
+
+                                <button
+                                    type="button"
+                                    role="switch"
+                                    aria-checked={autoQuarantineEnabled}
+                                    onClick={handleAutoQuarantineToggle}
+                                    disabled={updatingAutoQuarantine}
+                                    className={`relative inline-flex h-7 w-14 items-center rounded-full border transition ${
+                                        autoQuarantineEnabled
+                                            ? 'border-indigo-600 bg-indigo-600'
+                                            : 'border-gray-300 bg-gray-200 dark:border-gray-600 dark:bg-gray-700'
+                                    } ${updatingAutoQuarantine ? 'cursor-not-allowed opacity-60' : ''}`}
+                                >
+                                    <span className="sr-only">Toggle auto quarantine</span>
+                                    <span
+                                        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
+                                            autoQuarantineEnabled ? 'translate-x-8' : 'translate-x-1'
+                                        }`}
+                                    />
                                 </button>
-                            )}
+                            </div>
+
+                            <p className="mt-3 text-xs font-medium uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">
+                                {autoQuarantineEnabled ? 'Enabled for background protection' : 'Disabled'}
+                            </p>
                         </div>
                     </div>
 
-                    {/* Stats Grid */}
                     <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
-                        <Link href={route('dashboard', { filter: 'email' })} className={`bg-white dark:bg-gray-800 overflow-hidden shadow-sm sm:rounded-lg p-6 border-2 transition duration-200 ${filter === 'email' ? 'border-blue-500' : 'border-transparent hover:border-blue-200'}`}>
+                        <Link
+                            href={route('dashboard', { filter: 'email' })}
+                            className={`bg-white dark:bg-gray-800 overflow-hidden shadow-sm sm:rounded-lg p-6 border-2 transition duration-200 ${filter === 'email' ? 'border-blue-500' : 'border-transparent hover:border-blue-200'}`}
+                        >
                             <div className="flex items-center">
                                 <div className="p-3 rounded-full bg-blue-100 text-blue-600">
                                     <Mail className="h-6 w-6" />
@@ -169,7 +263,10 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                             </div>
                         </Link>
 
-                        <Link href={route('dashboard', { filter: 'sms' })} className={`bg-white dark:bg-gray-800 overflow-hidden shadow-sm sm:rounded-lg p-6 border-2 transition duration-200 ${filter === 'sms' ? 'border-purple-500' : 'border-transparent hover:border-purple-200'}`}>
+                        <Link
+                            href={route('dashboard', { filter: 'sms' })}
+                            className={`bg-white dark:bg-gray-800 overflow-hidden shadow-sm sm:rounded-lg p-6 border-2 transition duration-200 ${filter === 'sms' ? 'border-purple-500' : 'border-transparent hover:border-purple-200'}`}
+                        >
                             <div className="flex items-center">
                                 <div className="p-3 rounded-full bg-purple-100 text-purple-600">
                                     <Smartphone className="h-6 w-6" />
@@ -181,7 +278,10 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                             </div>
                         </Link>
 
-                        <Link href={route('dashboard', { filter: 'threats' })} className={`bg-white dark:bg-gray-800 overflow-hidden shadow-sm sm:rounded-lg p-6 border-2 transition duration-200 ${filter === 'threats' ? 'border-red-500' : 'border-transparent hover:border-red-200'}`}>
+                        <Link
+                            href={route('dashboard', { filter: 'threats' })}
+                            className={`bg-white dark:bg-gray-800 overflow-hidden shadow-sm sm:rounded-lg p-6 border-2 transition duration-200 ${filter === 'threats' ? 'border-red-500' : 'border-transparent hover:border-red-200'}`}
+                        >
                             <div className="flex items-center">
                                 <div className="p-3 rounded-full bg-red-100 text-red-600">
                                     <ShieldAlert className="h-6 w-6" />
@@ -206,11 +306,8 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                         </div>
                     </div>
 
-                    {/* Recent Activity Table */}
                     <div className="bg-white dark:bg-gray-800 overflow-hidden shadow-sm sm:rounded-lg">
                         <div className="p-6 text-gray-900 dark:text-gray-100">
-
-                            {/* Header, Rows Selector & Search Bar */}
                             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
                                 <div className="flex items-center gap-4">
                                     <h3 className="text-lg font-medium">Recent Activity Log</h3>
@@ -222,13 +319,12 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                                 </div>
 
                                 <div className="flex flex-col sm:flex-row items-center gap-4 w-full sm:w-auto">
-                                    {/* 👇 Items Per Page Dropdown */}
                                     <div className="flex items-center gap-2 w-full sm:w-auto justify-end sm:justify-start">
                                         <label htmlFor="perPage" className="text-sm text-gray-500 dark:text-gray-400 whitespace-nowrap">Show:</label>
                                         <select
                                             id="perPage"
                                             value={itemsPerPage}
-                                            onChange={(e) => setItemsPerPage(Number(e.target.value))}
+                                            onChange={(event) => setItemsPerPage(Number(event.target.value))}
                                             className="block w-20 py-1.5 pl-3 pr-8 border border-gray-300 rounded-md leading-5 bg-white dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                                         >
                                             <option value={10}>10</option>
@@ -238,7 +334,6 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                                         </select>
                                     </div>
 
-                                    {/* Search Input */}
                                     <div className="relative w-full sm:w-72">
                                         <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                                             <Search className="h-4 w-4 text-gray-400" />
@@ -247,7 +342,7 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                                             type="text"
                                             placeholder="Search subject or sender..."
                                             value={searchTerm}
-                                            onChange={(e) => setSearchTerm(e.target.value)}
+                                            onChange={(event) => setSearchTerm(event.target.value)}
                                             className="block w-full pl-10 pr-3 py-1.5 border border-gray-300 rounded-md leading-5 bg-white dark:bg-gray-700 dark:border-gray-600 dark:text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm transition-colors"
                                         />
                                     </div>
@@ -311,10 +406,13 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                                                                 <span className="font-bold text-gray-600 dark:text-gray-400">{alert.risk_score}% - {alert.severity.toUpperCase()}</span>
                                                             </div>
                                                             <div className="w-full bg-gray-200 rounded-full h-1.5 dark:bg-gray-700">
-                                                                <div className={`h-1.5 rounded-full ${
-                                                                    alert.risk_score > 75 ? 'bg-red-500' :
-                                                                    alert.risk_score > 40 ? 'bg-yellow-500' : 'bg-green-500'
-                                                                }`} style={{ width: `${alert.risk_score}%` }}></div>
+                                                                <div
+                                                                    className={`h-1.5 rounded-full ${
+                                                                        alert.risk_score > 75 ? 'bg-red-500' :
+                                                                        alert.risk_score > 40 ? 'bg-yellow-500' : 'bg-green-500'
+                                                                    }`}
+                                                                    style={{ width: `${alert.risk_score}%` }}
+                                                                />
                                                             </div>
                                                         </div>
                                                     </td>
@@ -333,14 +431,20 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                                                             {alert.is_threat && (
                                                                 <>
                                                                     <button
-                                                                        onClick={(e) => { e.stopPropagation(); handleMarkSafe(alert.id, alert.source); }}
+                                                                        onClick={(event) => {
+                                                                            event.stopPropagation();
+                                                                            handleMarkSafe(alert.id, alert.source);
+                                                                        }}
                                                                         className="text-green-600 hover:text-green-900 mr-3"
                                                                         title="Mark as Safe"
                                                                     >
                                                                         <CheckCircle className="w-5 h-5" />
                                                                     </button>
                                                                     <button
-                                                                        onClick={(e) => { e.stopPropagation(); handleDelete(alert.id, alert.source); }}
+                                                                        onClick={(event) => {
+                                                                            event.stopPropagation();
+                                                                            handleDelete(alert.id, alert.source);
+                                                                        }}
                                                                         className="text-gray-400 hover:text-gray-600"
                                                                         title="Dismiss Alert"
                                                                     >
@@ -363,7 +467,6 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                                 </table>
                             </div>
 
-                            {/* 👇 Pagination Controls */}
                             <div className="flex flex-col sm:flex-row items-center justify-between border-t border-gray-200 dark:border-gray-700 mt-4 pt-4 gap-4">
                                 <div className="text-sm text-gray-700 dark:text-gray-300">
                                     {filteredAlerts.length === 0 ? (
@@ -376,7 +479,7 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                                 {totalPages > 1 && (
                                     <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
                                         <button
-                                            onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                                            onClick={() => setCurrentPage((previousPage) => Math.max(previousPage - 1, 1))}
                                             disabled={currentPage === 1}
                                             className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-gray-800 dark:border-gray-600"
                                         >
@@ -387,7 +490,7 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                                             Page {currentPage} of {totalPages}
                                         </div>
                                         <button
-                                            onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                                            onClick={() => setCurrentPage((previousPage) => Math.min(previousPage + 1, totalPages))}
                                             disabled={currentPage === totalPages}
                                             className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-gray-800 dark:border-gray-600"
                                         >
@@ -397,7 +500,6 @@ export default function Dashboard({ auth, initialStats, isConnected, recentAlert
                                     </nav>
                                 )}
                             </div>
-
                         </div>
                     </div>
                 </div>

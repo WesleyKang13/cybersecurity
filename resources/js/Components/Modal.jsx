@@ -24,6 +24,8 @@ export default function Modal({
         lg: 'sm:max-w-lg',
         xl: 'sm:max-w-xl',
         '2xl': 'sm:max-w-2xl',
+        '3xl': 'sm:max-w-2xl md:max-w-3xl',
+        '4xl': 'sm:max-w-2xl md:max-w-3xl lg:max-w-4xl',
     }[maxWidth];
 
     return (

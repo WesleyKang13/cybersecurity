@@ -1,18 +1,13 @@
 <?php
 
-use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\AdminDashboardController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\DashboardController;
-use App\Http\Controllers\SmsController;
-use App\Http\Controllers\AdminDashboardController;
 use App\Http\Controllers\DomainController;
-use App\Models\ScannedEmail;
-use App\Models\User;
-use App\Services\GmailService;
-use Illuminate\Foundation\Application;
+use App\Http\Controllers\EmailScanController;
+use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\SmsController;
 use Illuminate\Support\Facades\Route;
-use Illuminate\Support\Facades\Auth;
-use Inertia\Inertia;
 
 Route::redirect('/', '/login');
 
@@ -29,11 +24,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
             ->name('admin.dashboard');
     Route::post('/admin/users', [AdminDashboardController::class, 'storeUser'])->name('admin.users.store');
     Route::put('/admin/users/{user}', [AdminDashboardController::class, 'updateUser'])->name('admin.users.update');
-    //Route::post('/admin/reports', [AdminDashboardController::class, 'generateReport'])->name('admin.reports.generate');
-
 });
 
 Route::middleware('auth')->group(function () {
+    Route::post('/api/scan-email', [EmailScanController::class, 'store'])->name('api.scan-email');
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
     Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');

@@ -2,9 +2,9 @@
 
 namespace App\Console\Commands;
 
-use Illuminate\Console\Command;
-use App\Models\User;
 use App\Jobs\ScanGmailJob;
+use App\Models\User;
+use Illuminate\Console\Command;
 
 class ScanAllUsers extends Command
 {
@@ -24,26 +24,24 @@ class ScanAllUsers extends Command
      */
     public function handle()
     {
-        $this->info('Starting automated security scan...');
+        $dispatchedJobs = 0;
 
-        // 1. Find all users who have a Google Token
-        $users = User::whereNotNull('token')->get();
+        User::query()
+            ->where('auto_quarantine', true)
+            ->where(function ($query) {
+                $query
+                    ->whereNotNull('google_access_token')
+                    ->orWhereNotNull('google_refresh_token');
+            })
+            ->chunkById(100, function ($users) use (&$dispatchedJobs) {
+                foreach ($users as $user) {
+                    ScanGmailJob::dispatch($user);
+                    $dispatchedJobs++;
+                }
+            });
 
-        if ($users->isEmpty()) {
-            $this->warn('No connected users found.');
-            return;
-        }
+        $this->info("Dispatched {$dispatchedJobs} Gmail scan job(s) for users with auto-quarantine enabled.");
 
-        $this->info("Found {$users->count()} users. Dispatching jobs...");
-
-        // 2. Loop through each user and trigger the Job
-        foreach ($users as $user) {
-            ScanGmailJob::dispatch($user);
-            $this->info(" -> Dispatched scan for: {$user->name}");
-
-
-        }
-
-        $this->info('All jobs dispatched successfully!');
+        return self::SUCCESS;
     }
 }

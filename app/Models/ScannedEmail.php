@@ -20,12 +20,19 @@ class ScannedEmail extends Model
         'severity',
         'reason',
         'risk_score',
-        'is_quarantined'
+        'is_quarantined',
+        'verdict',
+        'threat_category',
+        'analysis_chain',
+        'final_reasoning',
+        'origin_trace',
     ];
 
     protected $casts = [
         'is_threat' => 'boolean',
         'is_quarantined' => 'boolean',
+        'analysis_chain' => 'array',
+        'origin_trace' => 'array',
         'subject' => 'encrypted',
         'sender' => 'encrypted',
         'snippet' => 'encrypted',

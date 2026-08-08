@@ -24,6 +24,9 @@ class User extends Authenticatable
         'company_id',
         'role',
         'token',
+        'google_access_token',
+        'google_refresh_token',
+        'google_token_expires_at',
         'auto_quarantine',
     ];
 
@@ -35,6 +38,9 @@ class User extends Authenticatable
     protected $hidden = [
         'password',
         'remember_token',
+        'token',
+        'google_access_token',
+        'google_refresh_token',
     ];
 
     /**
@@ -47,7 +53,11 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
-            'token' => 'array'
+            'token' => 'array',
+            'google_access_token' => 'encrypted',
+            'google_refresh_token' => 'encrypted',
+            'google_token_expires_at' => 'datetime',
+            'auto_quarantine' => 'boolean',
         ];
     }
 

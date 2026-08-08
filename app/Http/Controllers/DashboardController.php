@@ -14,14 +14,13 @@ class DashboardController extends Controller
     {
         /** @var \App\Models\User $user */
         $user = Auth::user();
-        $isConnected = !empty($user->token);
         $filter = $request->input('filter', 'all');
 
         // 1. Calculate Stats
-        $emailCount = $isConnected ? ScannedEmail::where('user_id', $user->id)->count() : 0;
+        $emailCount = ScannedEmail::where('user_id', $user->id)->count();
         $smsCount = ScannedSms::where('user_id', $user->id)->count();
 
-        $emailThreats = $isConnected ? ScannedEmail::where('user_id', $user->id)->where('is_threat', true)->count() : 0;
+        $emailThreats = ScannedEmail::where('user_id', $user->id)->where('is_threat', true)->count();
         $smsThreats = ScannedSms::where('user_id', $user->id)->where('is_threat', true)->count();
 
         $stats = [
@@ -35,24 +34,27 @@ class DashboardController extends Controller
         $feed = collect([]);
 
         // Add Emails
-        if ($isConnected) {
-            $emails = ScannedEmail::where('user_id', $user->id)->latest()->take(50)->get();
-            $feed = $feed->concat($emails->map(fn($e) => [
-                'id' => 'email_'.$e->id,
-                'source' => 'email',
-                'subject' => $e->subject,
-                'sender' => $e->sender,
-                'is_threat' => $e->is_threat,
-                'severity' => $e->severity,
-                'risk_score' => $e->risk_score,
-                'date_obj' => $e->created_at,
-                'date' => $e->created_at->diffForHumans(),
-                'snippet' => $e->snippet,
-                'reason' => $e->reason ?? $e->explanation ?? 'Analysis pending...',
-                'detection_layer' => $e->detection_layer,
-                'is_quarantined' => $e->is_quarantined
-            ]));
-        }
+        $emails = ScannedEmail::where('user_id', $user->id)->latest()->take(50)->get();
+        $feed = $feed->concat($emails->map(fn($e) => [
+            'id' => 'email_'.$e->id,
+            'source' => 'email',
+            'subject' => $e->subject,
+            'sender' => $e->sender,
+            'is_threat' => $e->is_threat,
+            'severity' => $e->severity,
+            'risk_score' => $e->risk_score,
+            'verdict' => $e->verdict,
+            'threat_category' => $e->threat_category,
+            'analysis_chain' => $e->analysis_chain ?? [],
+            'final_reasoning' => $e->final_reasoning,
+            'origin_trace' => $e->origin_trace,
+            'date_obj' => $e->created_at,
+            'date' => $e->created_at->diffForHumans(),
+            'snippet' => $e->snippet,
+            'reason' => $e->final_reasoning ?? $e->reason ?? $e->explanation ?? 'Analysis pending...',
+            'detection_layer' => $e->detection_layer,
+            'is_quarantined' => $e->is_quarantined
+        ]));
 
         // Add SMS
         $sms = ScannedSms::where('user_id', $user->id)->latest()->take(50)->get();
@@ -83,17 +85,23 @@ class DashboardController extends Controller
 
         return Inertia::render('Dashboard', [
             'initialStats' => $stats,
-            'isConnected' => $isConnected,
             'recentAlerts' => $recentAlerts,
             'filter' => $filter,
+            'isGmailConnected' => !empty($user->google_refresh_token),
         ]);
     }
 
     public function disconnect()
     {
         $user = Auth::user();
-        $user->update(['token' => null, 'google_id' => null]);
-        return redirect()->route('dashboard')->with('success', 'Disconnected successfully.');
+        $user->update([
+            'token' => null,
+            'google_access_token' => null,
+            'google_refresh_token' => null,
+            'google_token_expires_at' => null,
+        ]);
+
+        return redirect()->route('dashboard')->with('success', 'Server-side Google tokens cleared successfully.');
     }
 
     public function markSafe($id, $source)
@@ -105,11 +113,24 @@ class DashboardController extends Controller
 
         if ($source === 'email') {
             $record = ScannedEmail::where('user_id', $user->id)->findOrFail($id);
+            $record->update([
+                'is_threat' => false,
+                'risk_score' => 0,
+                'severity' => 'verified',
+                'verdict' => 'SAFE',
+                'threat_category' => 'None',
+                'analysis_chain' => [
+                    'Step 1: Dashboard user reviewed the sender identity and message context.',
+                    'Step 2: Dashboard user determined the message should not remain flagged as a threat.',
+                    'Step 3: The alert was manually overridden and no further technical escalation is required.',
+                ],
+                'final_reasoning' => 'User marked this email as safe from the dashboard.',
+                'reason' => 'User marked this email as safe from the dashboard.',
+            ]);
         } else {
             $record = ScannedSms::where('user_id', $user->id)->findOrFail($id);
+            $record->update(['is_threat' => false, 'risk_score' => 0, 'severity' => 'verified']);
         }
-
-        $record->update(['is_threat' => false, 'risk_score' => 0, 'severity' => 'verified']);
 
         return back()->with('success', 'Item marked as safe.');
     }

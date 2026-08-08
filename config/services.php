@@ -43,6 +43,7 @@ return [
     ],
     'gemini' => [
         'key' => env('GEMINI_API_KEY'),
+        'mode' => env('AI_MODE', 'live'),
     ],
     'slack' => [
         'notifications' => [

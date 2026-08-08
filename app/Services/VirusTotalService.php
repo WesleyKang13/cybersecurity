@@ -10,6 +10,10 @@ class VirusTotalService
 {
     public function scanFirstUrl($emailText)
     {
+        if (strtolower((string) config('services.gemini.mode', 'live')) === 'mock') {
+            return null;
+        }
+
         // 1. REGEX: Rip out all http/https links from the email body
         preg_match_all('#\bhttps?://[^\s()<>]+(?:\([\w\d]+\)|([^[:punct:]\s]|/))#', $emailText, $matches);
         $urls = array_unique($matches[0]);
@@ -44,18 +48,30 @@ class VirusTotalService
 
             if ($response->successful()) {
                 $stats = $response->json('data.attributes.last_analysis_stats');
+                $analysisResults = $response->json('data.attributes.last_analysis_results', []);
 
                 // Tally up the security vendors that flagged this link
                 $malicious = $stats['malicious'] ?? 0;
                 $suspicious = $stats['suspicious'] ?? 0;
                 $totalThreats = $malicious + $suspicious;
+                $vendorFlags = [];
+
+                foreach ($analysisResults as $vendorName => $result) {
+                    if (in_array($result['category'] ?? null, ['malicious', 'suspicious'], true)) {
+                        $vendorFlags[] = $vendorName;
+                    }
+                }
 
                 // Save to our database cache forever
-                return ScannedUrl::create([
+                $record = ScannedUrl::create([
                     'url' => $targetUrl,
                     'is_malicious' => $totalThreats > 0,
                     'malicious_votes' => $totalThreats,
                 ]);
+
+                $record->setAttribute('vendor_flags', $vendorFlags);
+
+                return $record;
             }
 
             return null; // URL hasn't been scanned by VT yet, or API failed
