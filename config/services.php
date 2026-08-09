@@ -45,6 +45,9 @@ return [
         'key' => env('GEMINI_API_KEY'),
         'mode' => env('AI_MODE', 'live'),
     ],
+    'cloudflare' => [
+        'api_token' => env('CLOUDFLARE_API_TOKEN'),
+    ],
     'slack' => [
         'notifications' => [
             'bot_user_oauth_token' => env('SLACK_BOT_USER_OAUTH_TOKEN'),

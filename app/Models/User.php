@@ -28,6 +28,14 @@ class User extends Authenticatable
         'google_refresh_token',
         'google_token_expires_at',
         'auto_quarantine',
+        'security_alert_email_enabled',
+        'security_alert_slack_enabled',
+        'security_alert_discord_enabled',
+        'security_alert_telegram_enabled',
+        'security_alert_slack_webhook_url',
+        'security_alert_discord_webhook_url',
+        'security_alert_telegram_bot_token',
+        'security_alert_telegram_chat_id',
     ];
 
     /**
@@ -41,6 +49,10 @@ class User extends Authenticatable
         'token',
         'google_access_token',
         'google_refresh_token',
+        'security_alert_slack_webhook_url',
+        'security_alert_discord_webhook_url',
+        'security_alert_telegram_bot_token',
+        'security_alert_telegram_chat_id',
     ];
 
     /**
@@ -58,6 +70,14 @@ class User extends Authenticatable
             'google_refresh_token' => 'encrypted',
             'google_token_expires_at' => 'datetime',
             'auto_quarantine' => 'boolean',
+            'security_alert_email_enabled' => 'boolean',
+            'security_alert_slack_enabled' => 'boolean',
+            'security_alert_discord_enabled' => 'boolean',
+            'security_alert_telegram_enabled' => 'boolean',
+            'security_alert_slack_webhook_url' => 'encrypted',
+            'security_alert_discord_webhook_url' => 'encrypted',
+            'security_alert_telegram_bot_token' => 'encrypted',
+            'security_alert_telegram_chat_id' => 'encrypted',
         ];
     }
 

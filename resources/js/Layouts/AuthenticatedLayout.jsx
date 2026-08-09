@@ -39,6 +39,13 @@ export default function AuthenticatedLayout({ header, children }) {
                                 <NavLink href={route('sms.index')} active={route().current('sms.index')}>
                                     SMS Detect
                                 </NavLink>
+
+                                <NavLink
+                                    href={route('dns-security.index')}
+                                    active={route().current('dns-security.*')}
+                                >
+                                    DNS Manager
+                                </NavLink>
                             </div>
                         </div>
 
@@ -154,6 +161,18 @@ export default function AuthenticatedLayout({ header, children }) {
                             active={route().current('dashboard')}
                         >
                             Dashboard
+                        </ResponsiveNavLink>
+                        <ResponsiveNavLink
+                            href={route('sms.index')}
+                            active={route().current('sms.index')}
+                        >
+                            SMS Detect
+                        </ResponsiveNavLink>
+                        <ResponsiveNavLink
+                            href={route('dns-security.index')}
+                            active={route().current('dns-security.*')}
+                        >
+                            DNS Manager
                         </ResponsiveNavLink>
                     </div>
 

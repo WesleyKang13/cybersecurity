@@ -3,6 +3,7 @@
 use App\Http\Controllers\AdminDashboardController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\DnsSecurityController;
 use App\Http\Controllers\DomainController;
 use App\Http\Controllers\EmailScanController;
 use App\Http\Controllers\ProfileController;
@@ -19,6 +20,17 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     Route::get('/sms-scanner', [SmsController::class, 'index'])->name('sms.index');
     Route::post('/sms-analyze', [SmsController::class, 'analyze'])->name('sms.analyze');
+    Route::get('/dns-security', [DnsSecurityController::class, 'index'])->name('dns-security.index');
+    Route::post('/dns-security', [DnsSecurityController::class, 'store'])->name('dns-security.store');
+    Route::post('/dns-security/alert-settings', [DnsSecurityController::class, 'updateAlertSettings'])->name('dns-security.alert-settings');
+    Route::post('/dns-security/block-ip', [DnsSecurityController::class, 'blockIp'])->name('dns-security.block-ip');
+    Route::post('/dns-security/unblock-ip', [DnsSecurityController::class, 'unblockIp'])->name('dns-security.unblock-ip');
+    Route::patch('/dns-security/{domain}', [DnsSecurityController::class, 'update'])->name('dns-security.update');
+    Route::get('/dns-security/ip-lookup/{ip}', [DnsSecurityController::class, 'lookupIp'])
+        ->where('ip', '.*')
+        ->name('dns-security.ip-lookup');
+    Route::post('/dns-security/{domain}/scan', [DnsSecurityController::class, 'scan'])->name('dns-security.scan');
+    Route::delete('/dns-security/{domain}', [DnsSecurityController::class, 'destroy'])->name('dns-security.destroy');
 
     Route::get('/admin/dashboard', [AdminDashboardController::class, 'index'])
             ->name('admin.dashboard');
