@@ -2,6 +2,7 @@ import ApplicationLogo from '@/Components/ApplicationLogo';
 import Dropdown from '@/Components/Dropdown';
 import NavLink from '@/Components/NavLink';
 import ResponsiveNavLink from '@/Components/ResponsiveNavLink';
+import { isPlatformAdminRole } from '@/constants/roles';
 import { Link, usePage } from '@inertiajs/react';
 import { useState } from 'react';
 
@@ -50,7 +51,7 @@ export default function AuthenticatedLayout({ header, children }) {
                         </div>
 
                         <div className="hidden sm:ms-6 sm:flex sm:items-center">
-                            {user.role === 'admin' && (
+                            {isPlatformAdminRole(user.role) && (
                                 <div className="mr-4 flex items-center gap-4">
                                     <Link
                                         href={route('admin.dashboard')}
@@ -186,7 +187,7 @@ export default function AuthenticatedLayout({ header, children }) {
                         >
                             DNS Manager
                         </ResponsiveNavLink>
-                        {user.role === 'admin' && (
+                        {isPlatformAdminRole(user.role) && (
                             <>
                                 <ResponsiveNavLink
                                     href={route('admin.dashboard')}

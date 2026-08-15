@@ -19,6 +19,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Throwable;
 
@@ -28,7 +29,7 @@ class AdminDashboardController extends Controller
     {
         $user = Auth::user();
 
-        if ($user->role !== 'admin') {
+        if (! $user->isAdmin()) {
             abort(403);
         }
 
@@ -251,7 +252,7 @@ class AdminDashboardController extends Controller
     {
         $user = Auth::user();
 
-        if ($user->role !== 'admin') {
+        if (! $user->isAdmin()) {
             abort(403);
         }
 
@@ -272,7 +273,7 @@ class AdminDashboardController extends Controller
     {
         $user = Auth::user();
 
-        if ($user->role !== 'admin') {
+        if (! $user->isAdmin()) {
             abort(403);
         }
 
@@ -310,7 +311,7 @@ class AdminDashboardController extends Controller
     {
         $user = Auth::user();
 
-        if ($user->role !== 'admin') {
+        if (! $user->isAdmin()) {
             abort(403);
         }
 
@@ -340,7 +341,7 @@ class AdminDashboardController extends Controller
     {
         $user = Auth::user();
 
-        if ($user->role !== 'admin') {
+        if (! $user->isAdmin()) {
             abort(403);
         }
 
@@ -370,7 +371,7 @@ class AdminDashboardController extends Controller
     {
         $user = Auth::user();
 
-        if ($user->role !== 'admin') {
+        if (! $user->isAdmin()) {
             abort(403);
         }
 
@@ -412,7 +413,7 @@ class AdminDashboardController extends Controller
             'email' => $request->email,
             'password' => Hash::make('password'),
             'company_id' => $admin->company_id,
-            'role' => 'user',
+            'role' => User::ROLE_PLATFORM_STAFF,
         ]);
 
         return redirect()->back();
@@ -424,7 +425,7 @@ class AdminDashboardController extends Controller
         $admin = Auth::user();
 
         // 1. Security Check: Only admins can edit, and only users in their company
-        if ($admin->role !== 'admin' || $user->company_id !== $admin->company_id) {
+        if (! $admin->isAdmin() || $user->company_id !== $admin->company_id) {
             abort(403, 'Unauthorized action.');
         }
 
@@ -432,8 +433,8 @@ class AdminDashboardController extends Controller
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             // Ensure unique email, but ignore the current user's email
-            'email' => ['required', 'string', 'email', 'max:255', \Illuminate\Validation\Rule::unique('users')->ignore($user->id)],
-            'role' => 'required|string|in:user,admin',
+            'email' => ['required', 'string', 'email', 'max:255', Rule::unique('users')->ignore($user->id)],
+            'role' => ['required', 'string', Rule::in(User::rolesForCompany($user->company))],
             'password' => 'nullable|string|min:8',
         ]);
 

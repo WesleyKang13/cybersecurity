@@ -13,6 +13,27 @@ class User extends Authenticatable
     /** @use HasFactory<\Database\Factories\UserFactory> */
     use HasFactory, Notifiable;
 
+    public const ROLE_PLATFORM_OWNER = 'platform_owner';
+
+    public const ROLE_PLATFORM_STAFF = 'platform_staff';
+
+    public const ROLE_CLIENT_ADMIN = 'client_admin';
+
+    public const ROLE_CLIENT_USER = 'client_user';
+
+    public const LEGACY_ROLE_ADMIN = 'admin';
+
+    public const LEGACY_ROLE_USER = 'user';
+
+    public const LEGACY_ROLE_MEMBER = 'member';
+
+    public const CANONICAL_ROLES = [
+        self::ROLE_PLATFORM_OWNER,
+        self::ROLE_PLATFORM_STAFF,
+        self::ROLE_CLIENT_ADMIN,
+        self::ROLE_CLIENT_USER,
+    ];
+
     /**
      * The attributes that are mass assignable.
      *
@@ -94,14 +115,87 @@ class User extends Authenticatable
         return $this->hasOne(OAuthToken::class);
     }
 
-    // Helper: Check if user is an Admin
+    public function isPlatformOwner(): bool
+    {
+        return $this->role === self::ROLE_PLATFORM_OWNER;
+    }
+
+    public function isPlatformStaff(): bool
+    {
+        return $this->role === self::ROLE_PLATFORM_STAFF;
+    }
+
+    public function isClientAdmin(): bool
+    {
+        return $this->role === self::ROLE_CLIENT_ADMIN;
+    }
+
+    public function isClientUser(): bool
+    {
+        return $this->role === self::ROLE_CLIENT_USER;
+    }
+
+    public function isPlatformUser(): bool
+    {
+        return $this->isPlatformOwner() || $this->isPlatformStaff();
+    }
+
+    public function belongsToPlatformCompany(): bool
+    {
+        return $this->belongsToCompanyType(Company::TYPE_PLATFORM);
+    }
+
+    public function belongsToClientCompany(): bool
+    {
+        return $this->belongsToCompanyType(Company::TYPE_CLIENT);
+    }
+
+    /**
+     * Transitional platform-admin check used by the existing admin area.
+     */
     public function isAdmin(): bool
     {
-        return $this->role === 'admin';
+        return $this->isPlatformUser() && $this->belongsToPlatformCompany();
+    }
+
+    public static function isRoleValidForCompany(string $role, ?Company $company): bool
+    {
+        return in_array($role, self::rolesForCompany($company), true);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public static function rolesForCompany(?Company $company): array
+    {
+        return match ($company?->type) {
+            Company::TYPE_PLATFORM => [
+                self::ROLE_PLATFORM_OWNER,
+                self::ROLE_PLATFORM_STAFF,
+            ],
+            Company::TYPE_CLIENT => [
+                self::ROLE_CLIENT_ADMIN,
+                self::ROLE_CLIENT_USER,
+            ],
+            default => [],
+        };
     }
 
     public function scannedEmails()
     {
         return $this->hasMany(ScannedEmail::class);
+    }
+
+    private function belongsToCompanyType(string $companyType): bool
+    {
+        if ($this->company_id === null) {
+            return false;
+        }
+
+        $company = $this->relationLoaded('company')
+            ? $this->company
+            : $this->company()->first();
+
+        return $company?->type === $companyType;
     }
 }

@@ -53,11 +53,11 @@ class CompanyTenantArchitectureTest extends TestCase
 
     public function test_admin_created_user_inherits_canonical_company_id(): void
     {
-        $adminCompany = $this->createCompany();
+        $adminCompany = $this->createCompany(['type' => Company::TYPE_PLATFORM]);
         $otherCompany = $this->createCompany();
         $admin = User::factory()->create([
             'company_id' => $adminCompany->id,
-            'role' => 'admin',
+            'role' => User::ROLE_PLATFORM_OWNER,
         ]);
 
         $response = $this->actingAs($admin)->post(route('admin.users.store'), [
@@ -71,31 +71,31 @@ class CompanyTenantArchitectureTest extends TestCase
             'email' => 'managed@example.test',
             'company_id' => $adminCompany->id,
             'organization_id' => null,
-            'role' => 'user',
+            'role' => User::ROLE_PLATFORM_STAFF,
         ]);
     }
 
     public function test_admin_can_update_only_users_in_the_same_company(): void
     {
-        $adminCompany = $this->createCompany();
+        $adminCompany = $this->createCompany(['type' => Company::TYPE_PLATFORM]);
         $otherCompany = $this->createCompany();
         $admin = User::factory()->create([
             'company_id' => $adminCompany->id,
-            'role' => 'admin',
+            'role' => User::ROLE_PLATFORM_OWNER,
         ]);
         $companyUser = User::factory()->create([
             'company_id' => $adminCompany->id,
-            'role' => 'user',
+            'role' => User::ROLE_PLATFORM_STAFF,
         ]);
         $otherUser = User::factory()->create([
             'company_id' => $otherCompany->id,
-            'role' => 'user',
+            'role' => User::ROLE_CLIENT_USER,
         ]);
 
         $this->actingAs($admin)->put(route('admin.users.update', $companyUser), [
             'name' => 'Updated User',
             'email' => $companyUser->email,
-            'role' => 'user',
+            'role' => User::ROLE_PLATFORM_STAFF,
             'company_id' => $otherCompany->id,
         ])->assertRedirect();
 
@@ -108,20 +108,26 @@ class CompanyTenantArchitectureTest extends TestCase
         $this->actingAs($admin)->put(route('admin.users.update', $otherUser), [
             'name' => 'Unauthorized Update',
             'email' => $otherUser->email,
-            'role' => 'user',
+            'role' => User::ROLE_CLIENT_USER,
         ])->assertForbidden();
     }
 
     public function test_admin_dashboard_lists_only_users_in_the_admin_company(): void
     {
-        $adminCompany = $this->createCompany();
+        $adminCompany = $this->createCompany(['type' => Company::TYPE_PLATFORM]);
         $otherCompany = $this->createCompany();
         $admin = User::factory()->create([
             'company_id' => $adminCompany->id,
-            'role' => 'admin',
+            'role' => User::ROLE_PLATFORM_OWNER,
         ]);
-        User::factory()->create(['company_id' => $adminCompany->id]);
-        User::factory()->create(['company_id' => $otherCompany->id]);
+        User::factory()->create([
+            'company_id' => $adminCompany->id,
+            'role' => User::ROLE_PLATFORM_STAFF,
+        ]);
+        User::factory()->create([
+            'company_id' => $otherCompany->id,
+            'role' => User::ROLE_CLIENT_USER,
+        ]);
 
         $this->actingAs($admin)
             ->get(route('admin.dashboard'))

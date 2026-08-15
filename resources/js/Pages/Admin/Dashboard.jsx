@@ -9,6 +9,7 @@ import PrimaryButton from '@/Components/PrimaryButton';
 import TextInput from '@/Components/TextInput';
 import InputLabel from '@/Components/InputLabel';
 import InputError from '@/Components/InputError';
+import { formatUserRole, USER_ROLES } from '@/constants/roles';
 import {
     ShieldAlert, Mail, MessageSquare, Users, LayoutDashboard, UserPlus,
     FileText, Calendar, TrendingUp, CheckCircle, Smartphone, ShieldCheck,
@@ -145,7 +146,7 @@ export default function AdminDashboard({
             id: user.id,
             name: user.name,
             email: user.email,
-            role: user.role || 'user',
+            role: user.role || USER_ROLES.PLATFORM_STAFF,
             password: '', // Always start password empty on edit
         });
         setShowEditUserModal(true);
@@ -503,8 +504,8 @@ export default function AdminDashboard({
                                                     </td>
                                                     <td className="px-6 py-4 whitespace-nowrap">
                                                         <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full
-                                                            ${user.role === 'admin' ? 'bg-purple-100 text-purple-800' : 'bg-green-100 text-green-800'}`}>
-                                                            {user.role ? user.role.toUpperCase() : 'USER'}
+                                                            ${user.role === USER_ROLES.PLATFORM_OWNER ? 'bg-purple-100 text-purple-800' : 'bg-green-100 text-green-800'}`}>
+                                                            {formatUserRole(user.role)}
                                                         </span>
                                                     </td>
                                                     <td className="px-6 py-4 whitespace-nowrap">
@@ -1210,8 +1211,8 @@ export default function AdminDashboard({
                                 onChange={(e) => editForm.setData('role', e.target.value)}
                                 className="mt-1 block w-full border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 rounded-md shadow-sm"
                             >
-                                <option value="user">Standard User</option>
-                                <option value="admin">Administrator</option>
+                                <option value={USER_ROLES.PLATFORM_STAFF}>Platform Staff</option>
+                                <option value={USER_ROLES.PLATFORM_OWNER}>Platform Owner</option>
                             </select>
                             <InputError message={editForm.errors.role} className="mt-2" />
                         </div>
