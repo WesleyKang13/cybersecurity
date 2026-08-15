@@ -5,12 +5,15 @@ import PrimaryButton from '@/Components/PrimaryButton';
 import SecondaryButton from '@/Components/SecondaryButton';
 import TextInput from '@/Components/TextInput';
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
+import IpIntelligenceModal from '@/Pages/Partials/IpIntelligenceModal';
+import Tier3IntegrationGuideModal from '@/Pages/Partials/Tier3IntegrationGuideModal';
 import { Head, router, useForm, usePage } from '@inertiajs/react';
 import {
     AlertCircle,
     CheckCircle2,
     ChevronDown,
     ChevronUp,
+    Copy,
     Globe,
     LoaderCircle,
     Plus,
@@ -65,6 +68,30 @@ const TAB_STYLES = {
     inactive: 'border-gray-200 bg-white text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700',
 };
 
+const INFRASTRUCTURE_TYPE_OPTIONS = [
+    {
+        value: 'universal',
+        label: 'Universal Scanner (Tier 1)',
+        description: 'Passive monitoring for DNS health, SSL expiration, and HTTP security headers. No access required.',
+    },
+    {
+        value: 'cloudflare',
+        label: 'Cloudflare Edge WAF (Tier 2)',
+        description: 'Perimeter defense and threat telemetry sync via Cloudflare API. Requires Zone ID.',
+    },
+    {
+        value: 'app_middleware',
+        label: 'Application Middleware (Tier 3)',
+        description: 'In-app threat detection and local IP blocking via secure bearer token.',
+    },
+];
+
+const getInfrastructureTypeLabel = (value) => {
+    const option = INFRASTRUCTURE_TYPE_OPTIONS.find((item) => item.value === value);
+
+    return option ? option.label : 'Universal Scanner (Tier 1)';
+};
+
 const normalizeStatusLabel = (value, fallback = 'Secure') => {
     const normalized = String(value || fallback).trim();
 
@@ -105,6 +132,7 @@ const getThreatActionLabel = (action) => {
 
 const getThreatRowKey = (threat) => `${threat.domain_id}:${threat.attacker_ip}`;
 const getAccessRuleRowKey = (rule) => `${rule.domain_id}:${rule.id}`;
+const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
 
 const getAddDomainProgressMessage = (elapsedMs) => {
     if (elapsedMs >= 4000) {
@@ -118,6 +146,33 @@ const getAddDomainProgressMessage = (elapsedMs) => {
     return 'Saving domain configuration...';
 };
 
+const getRelativeSyncLabel = (timestamp, nowMs) => {
+    if (!timestamp) {
+        return 'Waiting for first sync...';
+    }
+
+    const syncedAt = new Date(timestamp);
+
+    if (Number.isNaN(syncedAt.getTime())) {
+        return 'Waiting for first sync...';
+    }
+
+    const diffMs = syncedAt.getTime() - nowMs;
+    const minuteMs = 60 * 1000;
+    const hourMs = 60 * minuteMs;
+    const dayMs = 24 * hourMs;
+
+    if (Math.abs(diffMs) < hourMs) {
+        return `Last checked ${relativeTimeFormatter.format(Math.round(diffMs / minuteMs), 'minute')}`;
+    }
+
+    if (Math.abs(diffMs) < dayMs) {
+        return `Last checked ${relativeTimeFormatter.format(Math.round(diffMs / hourMs), 'hour')}`;
+    }
+
+    return `Last checked ${relativeTimeFormatter.format(Math.round(diffMs / dayMs), 'day')}`;
+};
+
 export default function DnsSecurityIndex({
     auth,
     domains = [],
@@ -125,6 +180,7 @@ export default function DnsSecurityIndex({
     recentThreatLogs = [],
     activeAccessRules = [],
     threatAnalytics = {},
+    last_synced_at = null,
     alertSettings = {},
 }) {
     const { flash } = usePage().props;
@@ -133,8 +189,11 @@ export default function DnsSecurityIndex({
     const [showAlertSettingsModal, setShowAlertSettingsModal] = useState(false);
     const [showThreatSettingsModal, setShowThreatSettingsModal] = useState(false);
     const [selectedThreatDomain, setSelectedThreatDomain] = useState(null);
+    const [showTier3GuideModal, setShowTier3GuideModal] = useState(false);
+    const [tier3GuideDomain, setTier3GuideDomain] = useState(null);
     const [scanningDomainId, setScanningDomainId] = useState(null);
     const [deletingDomainId, setDeletingDomainId] = useState(null);
+    const [copiedTokenDomainId, setCopiedTokenDomainId] = useState(null);
     const [severityFilter, setSeverityFilter] = useState('all');
     const [domainFilter, setDomainFilter] = useState('all');
     const [searchTerm, setSearchTerm] = useState('');
@@ -153,6 +212,7 @@ export default function DnsSecurityIndex({
         show: false,
         threat: null,
     });
+    const [relativeTimeNow, setRelativeTimeNow] = useState(() => Date.now());
     const [ipLookupModal, setIpLookupModal] = useState({
         show: false,
         loading: false,
@@ -163,6 +223,8 @@ export default function DnsSecurityIndex({
 
     const addDomainForm = useForm({
         domain: '',
+        infrastructure_type: 'universal',
+        cloudflare_zone_id: '',
     });
 
     const alertSettingsForm = useForm({
@@ -179,6 +241,7 @@ export default function DnsSecurityIndex({
     const threatSettingsForm = useForm({
         is_owned: false,
         cloudflare_zone_id: '',
+        auto_ban_threshold: 10,
     });
 
     const domainOptions = domains
@@ -186,7 +249,15 @@ export default function DnsSecurityIndex({
         .sort((left, right) => left.localeCompare(right));
 
     const ownedDomains = domains.filter((domain) => domain.is_owned);
-    const configuredOwnedDomains = ownedDomains.filter((domain) => String(domain.cloudflare_zone_id || '').trim() !== '');
+    const configuredOwnedDomains = ownedDomains.filter((domain) => {
+        if (domain.infrastructure_type === 'app_middleware') {
+            return String(domain.app_secret_token || '').trim() !== '';
+        }
+
+        return String(domain.cloudflare_zone_id || '').trim() !== '';
+    });
+    const selectedThreatDomainIsAppMiddleware = selectedThreatDomain?.infrastructure_type === 'app_middleware';
+    const selectedThreatDomainIsUniversal = selectedThreatDomain?.infrastructure_type === 'universal';
 
     const filteredLogs = recentLogs.filter((log) => {
         const searchLower = searchTerm.trim().toLowerCase();
@@ -241,6 +312,7 @@ export default function DnsSecurityIndex({
         1,
         ...hourlyAttackVolume.map((point) => Number(point.count || 0))
     );
+    const lastSyncedLabel = getRelativeSyncLabel(last_synced_at, relativeTimeNow);
 
     const summary = domains.reduce(
         (accumulator, domain) => {
@@ -270,6 +342,22 @@ export default function DnsSecurityIndex({
     );
 
     useEffect(() => {
+        const intervalId = window.setInterval(() => {
+            window.location.reload();
+        }, 5 * 60 * 1000);
+
+        return () => window.clearInterval(intervalId);
+    }, []);
+
+    useEffect(() => {
+        const intervalId = window.setInterval(() => {
+            setRelativeTimeNow(Date.now());
+        }, 60 * 1000);
+
+        return () => window.clearInterval(intervalId);
+    }, []);
+
+    useEffect(() => {
         if (!addDomainForm.processing) {
             setAddDomainElapsedMs(0);
 
@@ -287,6 +375,8 @@ export default function DnsSecurityIndex({
         setShowAddDomainModal(false);
         setAddDomainElapsedMs(0);
         addDomainForm.reset();
+        addDomainForm.setData('infrastructure_type', 'universal');
+        addDomainForm.setData('cloudflare_zone_id', '');
         addDomainForm.clearErrors();
     };
 
@@ -315,6 +405,7 @@ export default function DnsSecurityIndex({
         threatSettingsForm.setData({
             is_owned: Boolean(domain.is_owned),
             cloudflare_zone_id: domain.cloudflare_zone_id || '',
+            auto_ban_threshold: domain.auto_ban_threshold ?? 10,
         });
         threatSettingsForm.clearErrors();
         setShowThreatSettingsModal(true);
@@ -326,6 +417,47 @@ export default function DnsSecurityIndex({
         setSelectedThreatDomain(null);
         threatSettingsForm.reset();
         threatSettingsForm.clearErrors();
+    };
+
+    const openTier3GuideModal = (domain) => {
+        if (!domain) {
+            return;
+        }
+
+        setTier3GuideDomain(domain);
+        setShowTier3GuideModal(true);
+    };
+
+    const closeTier3GuideModal = () => {
+        setShowTier3GuideModal(false);
+        setTier3GuideDomain(null);
+    };
+
+    const openTier3GuideFromSettings = () => {
+        const domain = selectedThreatDomain;
+
+        if (!domain) {
+            return;
+        }
+
+        closeThreatSettingsModal();
+        openTier3GuideModal(domain);
+    };
+
+    const copyAppSecretToken = async (domain) => {
+        if (!domain?.app_secret_token || !navigator?.clipboard?.writeText) {
+            return;
+        }
+
+        try {
+            await navigator.clipboard.writeText(domain.app_secret_token);
+            setCopiedTokenDomainId(domain.id);
+            window.setTimeout(() => {
+                setCopiedTokenDomainId((current) => (current === domain.id ? null : current));
+            }, 2000);
+        } catch (error) {
+            setCopiedTokenDomainId(null);
+        }
     };
 
     const toggleExpandedLog = (logId) => {
@@ -1215,7 +1347,7 @@ export default function DnsSecurityIndex({
                                     <div>
                                         <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">Owned Infrastructure</h3>
                                         <p className="text-sm text-gray-500 dark:text-gray-400">
-                                            Mark domains you own, attach Cloudflare Zone IDs, and expose live firewall telemetry.
+                                            Configure owned domains for Cloudflare edge telemetry or application-level middleware reporting.
                                         </p>
                                     </div>
                                     <div className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-gray-600 dark:bg-gray-800 dark:text-gray-300">
@@ -1243,8 +1375,10 @@ export default function DnsSecurityIndex({
                                                             </h4>
                                                             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                                                                 {domain.is_owned
-                                                                    ? 'Owned infrastructure'
-                                                                    : 'Monitored externally only'}
+                                                                    ? `${getInfrastructureTypeLabel(domain.infrastructure_type)}${domain.infrastructure_type === 'app_middleware' ? ' integration' : ''}`
+                                                                    : domain.infrastructure_type === 'universal'
+                                                                        ? getInfrastructureTypeLabel(domain.infrastructure_type)
+                                                                        : 'Monitored externally only'}
                                                             </p>
                                                         </div>
 
@@ -1261,11 +1395,25 @@ export default function DnsSecurityIndex({
 
                                                     <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 px-3 py-3 text-sm dark:border-gray-700 dark:bg-gray-900/60">
                                                         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400">
-                                                            Cloudflare Zone ID
+                                                            {domain.infrastructure_type === 'app_middleware'
+                                                                ? 'Integration Type'
+                                                                : domain.infrastructure_type === 'universal'
+                                                                    ? 'Monitoring Mode'
+                                                                    : 'Cloudflare Zone ID'}
                                                         </p>
-                                                        <p className="mt-2 break-all font-mono text-xs text-gray-700 dark:text-gray-300">
-                                                            {domain.cloudflare_zone_id || 'Not configured'}
-                                                        </p>
+                                                        {domain.infrastructure_type === 'app_middleware' ? (
+                                                            <p className="mt-2 text-xs font-semibold text-gray-700 dark:text-gray-300">
+                                                                Application middleware publishes threat telemetry directly with a bearer token.
+                                                            </p>
+                                                        ) : domain.infrastructure_type === 'universal' ? (
+                                                            <p className="mt-2 text-xs font-semibold text-gray-700 dark:text-gray-300">
+                                                                Passive DNS, SSL, and HTTP security header audits with no infrastructure access required.
+                                                            </p>
+                                                        ) : (
+                                                            <p className="mt-2 break-all font-mono text-xs text-gray-700 dark:text-gray-300">
+                                                                {domain.cloudflare_zone_id || 'Not configured'}
+                                                            </p>
+                                                        )}
                                                     </div>
 
                                                     <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -1329,7 +1477,11 @@ export default function DnsSecurityIndex({
                                                             onClick={() => openThreatSettingsModal(domain)}
                                                             className="inline-flex items-center rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
                                                         >
-                                                            Configure Cloudflare
+                                                            {domain.infrastructure_type === 'app_middleware'
+                                                                ? 'View Integration'
+                                                                : domain.infrastructure_type === 'cloudflare'
+                                                                    ? 'Configure Cloudflare'
+                                                                    : 'View Monitoring Mode'}
                                                         </button>
                                                     </div>
                                                 </article>
@@ -1341,7 +1493,7 @@ export default function DnsSecurityIndex({
                                         <ShieldAlert className="mx-auto h-10 w-10 text-gray-400" />
                                         <h4 className="mt-4 text-lg font-bold text-gray-900 dark:text-gray-100">No domains available</h4>
                                         <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-                                            Add a domain first, then mark it as owned to attach a Cloudflare Zone ID.
+                                            Add a domain first, then choose passive posture scanning or an owned-infrastructure integration mode.
                                         </p>
                                     </div>
                                 )}
@@ -1519,7 +1671,10 @@ export default function DnsSecurityIndex({
                                     </div>
                                 )}
 
-                                <div className="mt-4 flex items-center justify-end gap-3">
+                                <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
+                                    <div className="text-sm font-medium text-gray-500 dark:text-gray-400">
+                                        {lastSyncedLabel}
+                                    </div>
                                     <label className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
                                         <span>Show rows</span>
                                         <select
@@ -1750,6 +1905,81 @@ export default function DnsSecurityIndex({
                                 Full URLs are accepted and will be normalized automatically.
                             </p>
                         </div>
+
+                        <div>
+                            <InputLabel htmlFor="infrastructure_type" value="Infrastructure Type" />
+                            <div className="mt-3 grid gap-3">
+                                {INFRASTRUCTURE_TYPE_OPTIONS.map((option) => {
+                                    const isSelected = addDomainForm.data.infrastructure_type === option.value;
+
+                                    return (
+                                        <label
+                                            key={option.value}
+                                            className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-4 py-4 text-sm transition ${
+                                                isSelected
+                                                    ? 'border-indigo-500 bg-indigo-50 shadow-sm dark:border-indigo-400 dark:bg-indigo-500/10'
+                                                    : 'border-gray-200 bg-white hover:border-indigo-300 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:border-indigo-500/50 dark:hover:bg-gray-800'
+                                            }`}
+                                        >
+                                            <input
+                                                type="radio"
+                                                name="infrastructure_type"
+                                                value={option.value}
+                                                checked={isSelected}
+                                                onChange={(event) => {
+                                                    const nextType = event.target.value;
+                                                    addDomainForm.setData('infrastructure_type', nextType);
+
+                                                    if (nextType !== 'cloudflare') {
+                                                        addDomainForm.setData('cloudflare_zone_id', '');
+                                                    }
+                                                }}
+                                                className="mt-1 border-gray-300 text-indigo-600 shadow-sm focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-900"
+                                            />
+                                            <span className="min-w-0">
+                                                <span className="block font-semibold text-gray-900 dark:text-gray-100">
+                                                    {option.label}
+                                                </span>
+                                                <span className="mt-1 block text-xs leading-5 text-gray-500 dark:text-gray-400">
+                                                    {option.description}
+                                                </span>
+                                            </span>
+                                        </label>
+                                    );
+                                })}
+                            </div>
+                            <InputError message={addDomainForm.errors.infrastructure_type} className="mt-2" />
+                        </div>
+
+                        {addDomainForm.data.infrastructure_type === 'cloudflare' && (
+                            <div>
+                                <InputLabel htmlFor="add_cloudflare_zone_id" value="Cloudflare Zone ID" />
+                                <TextInput
+                                    id="add_cloudflare_zone_id"
+                                    type="text"
+                                    value={addDomainForm.data.cloudflare_zone_id}
+                                    onChange={(event) => addDomainForm.setData('cloudflare_zone_id', event.target.value)}
+                                    className="mt-1 block w-full font-mono text-sm"
+                                    placeholder="023e105f4ecef8ad9ca31a8372d0c353"
+                                />
+                                <InputError message={addDomainForm.errors.cloudflare_zone_id} className="mt-2" />
+                                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                    Optional during creation. Add it now if this is owned Cloudflare-backed infrastructure and you want threat telemetry immediately.
+                                </p>
+                            </div>
+                        )}
+
+                        {addDomainForm.data.infrastructure_type === 'app_middleware' && (
+                            <div className="rounded-2xl border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-cyan-900 dark:border-cyan-500/30 dark:bg-cyan-500/15 dark:text-cyan-100">
+                                A secure 64-character application token will be generated automatically after this domain is created.
+                            </div>
+                        )}
+
+                        {addDomainForm.data.infrastructure_type === 'universal' && (
+                            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-100">
+                                Universal posture scans run passively and do not require Cloudflare credentials or middleware tokens.
+                            </div>
+                        )}
                     </div>
 
                     <div className="mt-6 flex justify-end gap-3">
@@ -1975,91 +2205,20 @@ export default function DnsSecurityIndex({
                 </div>
             </Modal>
 
-            <Modal show={ipLookupModal.show} onClose={closeIpLookupModal} maxWidth="md">
-                <div className="bg-white p-6 dark:bg-gray-800">
-                    <div className="space-y-2">
-                        <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100">IP Intelligence</h2>
-                        <p className="font-mono text-sm text-gray-500 dark:text-gray-400">{ipLookupModal.ip || 'Unknown IP'}</p>
-                    </div>
-
-                    {ipLookupModal.loading ? (
-                        <div className="mt-6 flex items-center gap-3 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-4 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-200">
-                            <LoaderCircle className="h-5 w-5 animate-spin" />
-                            <span>Loading IP intelligence...</span>
-                        </div>
-                    ) : ipLookupModal.error ? (
-                        <div className="mt-6 flex items-center gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-4 text-sm text-red-800 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-100">
-                            <AlertCircle className="h-5 w-5 shrink-0" />
-                            <span>{ipLookupModal.error}</span>
-                        </div>
-                    ) : ipLookupModal.data ? (
-                        <div className="mt-6 space-y-4">
-                            <div className="flex flex-wrap gap-2">
-                                {ipLookupModal.data.proxy && (
-                                    <span className="inline-flex rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-red-700 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-200">
-                                        Proxy / VPN
-                                    </span>
-                                )}
-                                {ipLookupModal.data.hosting && (
-                                    <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-200">
-                                        Hosting Provider
-                                    </span>
-                                )}
-                                {ipLookupModal.data.mobile && (
-                                    <span className="inline-flex rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-cyan-700 dark:border-cyan-500/30 dark:bg-cyan-500/15 dark:text-cyan-200">
-                                        Cellular Network
-                                    </span>
-                                )}
-                            </div>
-
-                            <div className="grid gap-3 sm:grid-cols-2">
-                                <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/60">
-                                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400">ISP</p>
-                                    <p className="mt-2 text-sm font-bold text-gray-900 dark:text-gray-100">
-                                        {ipLookupModal.data.isp || 'Unknown'}
-                                    </p>
-                                </div>
-                                <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/60">
-                                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400">Organization</p>
-                                    <p className="mt-2 text-sm font-bold text-gray-900 dark:text-gray-100">
-                                        {ipLookupModal.data.org || 'Unknown'}
-                                    </p>
-                                </div>
-                                <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/60">
-                                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400">Region / City</p>
-                                    <p className="mt-2 text-sm font-bold text-gray-900 dark:text-gray-100">
-                                        {[ipLookupModal.data.regionName, ipLookupModal.data.city].filter(Boolean).join(', ') || 'Unknown'}
-                                    </p>
-                                </div>
-                                <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/60">
-                                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400">Country</p>
-                                    <p className="mt-2 text-sm font-bold text-gray-900 dark:text-gray-100">
-                                        {ipLookupModal.data.country || 'Unknown'}
-                                    </p>
-                                </div>
-                            </div>
-
-                            <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/60">
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400">ASN</p>
-                                <p className="mt-2 text-sm font-bold text-gray-900 dark:text-gray-100">
-                                    {ipLookupModal.data.as || 'Unknown'}
-                                </p>
-                            </div>
-                        </div>
-                    ) : null}
-
-                    <div className="mt-6 flex justify-end">
-                        <SecondaryButton onClick={closeIpLookupModal}>Close</SecondaryButton>
-                    </div>
-                </div>
-            </Modal>
+            <IpIntelligenceModal state={ipLookupModal} onClose={closeIpLookupModal} />
+            <Tier3IntegrationGuideModal
+                isOpen={showTier3GuideModal}
+                onClose={closeTier3GuideModal}
+                domainName={tier3GuideDomain?.domain}
+                appSecretToken={tier3GuideDomain?.app_secret_token}
+            />
 
             <Modal show={showThreatSettingsModal} onClose={closeThreatSettingsModal} maxWidth="md">
                 <form onSubmit={submitThreatSettings} className="bg-white p-6 dark:bg-gray-800">
                     <div className="space-y-2">
-                        <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100">Cloudflare Ownership Settings</h2>
+                        <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100">Infrastructure Settings</h2>
                         <p className="text-sm text-gray-500 dark:text-gray-400">
-                            Mark the domain as owned infrastructure and attach the Cloudflare Zone ID used for threat telemetry.
+                            Review the current infrastructure type and configure the integration details used for active threat telemetry.
                         </p>
                     </div>
 
@@ -2067,43 +2226,117 @@ export default function DnsSecurityIndex({
                         <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm dark:border-gray-700 dark:bg-gray-900/60">
                             <p className="font-semibold text-gray-900 dark:text-gray-100">{selectedThreatDomain.domain}</p>
                             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                Configure this domain for live Cloudflare firewall event syncing.
+                                {getInfrastructureTypeLabel(selectedThreatDomain.infrastructure_type)}
                             </p>
                         </div>
                     )}
 
                     <div className="mt-6 space-y-4">
-                        <label className="flex items-start gap-3 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm dark:border-gray-700 dark:bg-gray-900/60">
-                            <input
-                                type="checkbox"
-                                checked={threatSettingsForm.data.is_owned}
-                                onChange={(event) => threatSettingsForm.setData('is_owned', event.target.checked)}
-                                className="mt-1 rounded border-gray-300 text-indigo-600 shadow-sm focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-900"
-                            />
-                            <span>
-                                <span className="block font-semibold text-gray-900 dark:text-gray-100">This is infrastructure we own</span>
-                                <span className="mt-1 block text-xs text-gray-500 dark:text-gray-400">
-                                    Only owned infrastructure should be connected to Cloudflare threat telemetry.
-                                </span>
-                            </span>
-                        </label>
-
                         <div>
-                            <InputLabel htmlFor="cloudflare_zone_id" value="Cloudflare Zone ID" />
+                            <InputLabel htmlFor="auto_ban_threshold" value="Auto-Ban Threat Threshold" />
                             <TextInput
-                                id="cloudflare_zone_id"
-                                type="text"
-                                value={threatSettingsForm.data.cloudflare_zone_id}
-                                onChange={(event) => threatSettingsForm.setData('cloudflare_zone_id', event.target.value)}
-                                className="mt-1 block w-full font-mono text-sm"
-                                placeholder="023e105f4ecef8ad9ca31a8372d0c353"
-                                disabled={!threatSettingsForm.data.is_owned}
+                                id="auto_ban_threshold"
+                                type="number"
+                                min="1"
+                                step="1"
+                                value={threatSettingsForm.data.auto_ban_threshold}
+                                onChange={(event) => threatSettingsForm.setData('auto_ban_threshold', event.target.value)}
+                                className="mt-1 block w-full text-sm"
+                                placeholder="10"
                             />
-                            <InputError message={threatSettingsForm.errors.cloudflare_zone_id} className="mt-2" />
+                            <InputError message={threatSettingsForm.errors.auto_ban_threshold} className="mt-2" />
                             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                Stored on the monitored domain so the threat sync command can query Cloudflare GraphQL for this zone.
+                                Auto-ban enabled integrations will block an IP after it reaches this many threat reports within the detection window.
                             </p>
                         </div>
+
+                        {selectedThreatDomainIsAppMiddleware ? (
+                            <Fragment>
+                                <div className="rounded-2xl border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-cyan-900 dark:border-cyan-500/30 dark:bg-cyan-500/15 dark:text-cyan-100">
+                                    Application middleware domains are treated as owned infrastructure automatically so they can report telemetry back to this manager.
+                                </div>
+
+                                <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-4 dark:border-gray-700 dark:bg-gray-900/60">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div>
+                                            <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Integration Credentials</p>
+                                            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                                Add this token to your external application's environment file to securely transmit threat logs back to this manager.
+                                            </p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => copyAppSecretToken(selectedThreatDomain)}
+                                            className="inline-flex items-center rounded-xl border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 transition hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                                        >
+                                            {copiedTokenDomainId === selectedThreatDomain?.id ? (
+                                                <CheckCircle2 className="mr-2 h-4 w-4" />
+                                            ) : (
+                                                <Copy className="mr-2 h-4 w-4" />
+                                            )}
+                                            {copiedTokenDomainId === selectedThreatDomain?.id ? 'Copied' : 'Copy to Clipboard'}
+                                        </button>
+                                    </div>
+
+                                    <div className="mt-4">
+                                        <InputLabel htmlFor="app_secret_token" value="Application Secret Token" />
+                                        <TextInput
+                                            id="app_secret_token"
+                                            type="text"
+                                            value={selectedThreatDomain?.app_secret_token || ''}
+                                            readOnly
+                                            className="mt-1 block w-full font-mono text-sm"
+                                        />
+                                    </div>
+
+                                    <div className="mt-4 flex justify-end">
+                                        <PrimaryButton type="button" onClick={openTier3GuideFromSettings}>
+                                            Open Tier 3 Integration Guide
+                                        </PrimaryButton>
+                                    </div>
+                                </div>
+                            </Fragment>
+                        ) : selectedThreatDomainIsUniversal ? (
+                            <Fragment>
+                                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-100">
+                                    Universal Scanner domains are always passive. They monitor DNS posture, SSL expiration, and web security headers without Cloudflare access or application credentials.
+                                </div>
+                            </Fragment>
+                        ) : (
+                            <Fragment>
+                                <label className="flex items-start gap-3 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm dark:border-gray-700 dark:bg-gray-900/60">
+                                    <input
+                                        type="checkbox"
+                                        checked={threatSettingsForm.data.is_owned}
+                                        onChange={(event) => threatSettingsForm.setData('is_owned', event.target.checked)}
+                                        className="mt-1 rounded border-gray-300 text-indigo-600 shadow-sm focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-900"
+                                    />
+                                    <span>
+                                        <span className="block font-semibold text-gray-900 dark:text-gray-100">This is infrastructure we own</span>
+                                        <span className="mt-1 block text-xs text-gray-500 dark:text-gray-400">
+                                            Only owned infrastructure should be connected to Cloudflare threat telemetry.
+                                        </span>
+                                    </span>
+                                </label>
+
+                                <div>
+                                    <InputLabel htmlFor="cloudflare_zone_id" value="Cloudflare Zone ID" />
+                                    <TextInput
+                                        id="cloudflare_zone_id"
+                                        type="text"
+                                        value={threatSettingsForm.data.cloudflare_zone_id}
+                                        onChange={(event) => threatSettingsForm.setData('cloudflare_zone_id', event.target.value)}
+                                        className="mt-1 block w-full font-mono text-sm"
+                                        placeholder="023e105f4ecef8ad9ca31a8372d0c353"
+                                        disabled={!threatSettingsForm.data.is_owned}
+                                    />
+                                    <InputError message={threatSettingsForm.errors.cloudflare_zone_id} className="mt-2" />
+                                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                        Stored on the monitored domain so the threat sync command can query Cloudflare GraphQL for this zone.
+                                    </p>
+                                </div>
+                            </Fragment>
+                        )}
                     </div>
 
                     <div className="mt-6 flex justify-end gap-3">

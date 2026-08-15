@@ -126,6 +126,7 @@ class SecurityAlertNotification extends Notification
             'attack_spike' => 'Attack Spike Detected',
             'ssl_warning' => 'SSL Certificate Warning',
             'dns_drift' => 'DNS Baseline Drift',
+            'auto_ban' => 'Auto-Ban Triggered',
             default => 'Security Alert',
         };
     }

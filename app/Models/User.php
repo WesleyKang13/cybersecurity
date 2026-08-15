@@ -4,6 +4,7 @@ namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
@@ -82,7 +83,7 @@ class User extends Authenticatable
     }
 
     // A user belongs to one company
-    public function company()
+    public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
     }
@@ -98,6 +99,7 @@ class User extends Authenticatable
     {
         return $this->role === 'admin';
     }
+
     public function scannedEmails()
     {
         return $this->hasMany(ScannedEmail::class);

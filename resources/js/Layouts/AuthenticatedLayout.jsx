@@ -51,16 +51,28 @@ export default function AuthenticatedLayout({ header, children }) {
 
                         <div className="hidden sm:ms-6 sm:flex sm:items-center">
                             {user.role === 'admin' && (
-                                <Link
-                                    href={route('admin.dashboard')}
-                                    className={`mr-4 text-sm font-medium transition duration-150 ease-in-out ${
-                                        route().current('admin.dashboard')
-                                            ? 'text-indigo-600 border-b-2 border-indigo-600'
-                                            : 'text-gray-500 hover:text-gray-700'
-                                    }`}
-                                >
-                                    Admin Dashboard
-                                </Link>
+                                <div className="mr-4 flex items-center gap-4">
+                                    <Link
+                                        href={route('admin.dashboard')}
+                                        className={`text-sm font-medium transition duration-150 ease-in-out ${
+                                            route().current('admin.dashboard')
+                                                ? 'border-b-2 border-indigo-600 text-indigo-600'
+                                                : 'text-gray-500 hover:text-gray-700'
+                                        }`}
+                                    >
+                                        Admin Dashboard
+                                    </Link>
+                                    <Link
+                                        href={route('admin.blocked-ips.index')}
+                                        className={`text-sm font-medium transition duration-150 ease-in-out ${
+                                            route().current('admin.blocked-ips.*')
+                                                ? 'border-b-2 border-indigo-600 text-indigo-600'
+                                                : 'text-gray-500 hover:text-gray-700'
+                                        }`}
+                                    >
+                                        Blocked IPs
+                                    </Link>
+                                </div>
                             )}
                             <div className="relative ms-3">
                                 <Dropdown>
@@ -174,6 +186,22 @@ export default function AuthenticatedLayout({ header, children }) {
                         >
                             DNS Manager
                         </ResponsiveNavLink>
+                        {user.role === 'admin' && (
+                            <>
+                                <ResponsiveNavLink
+                                    href={route('admin.dashboard')}
+                                    active={route().current('admin.dashboard')}
+                                >
+                                    Admin Dashboard
+                                </ResponsiveNavLink>
+                                <ResponsiveNavLink
+                                    href={route('admin.blocked-ips.index')}
+                                    active={route().current('admin.blocked-ips.*')}
+                                >
+                                    Blocked IPs
+                                </ResponsiveNavLink>
+                            </>
+                        )}
                     </div>
 
                     <div className="border-t border-gray-200 pb-1 pt-4">

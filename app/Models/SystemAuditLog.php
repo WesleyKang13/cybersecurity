@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-class SecurityThreatLog extends Model
+class SystemAuditLog extends Model
 {
     use HasFactory;
 
@@ -16,14 +16,11 @@ class SecurityThreatLog extends Model
      * @var list<string>
      */
     protected $fillable = [
-        'monitored_domain_id',
-        'attacker_ip',
-        'country',
-        'path_targeted',
-        'user_agent',
-        'action_taken',
-        'threat_source',
-        'detected_at',
+        'user_id',
+        'action',
+        'target_type',
+        'target_id',
+        'metadata',
     ];
 
     /**
@@ -32,12 +29,12 @@ class SecurityThreatLog extends Model
     protected function casts(): array
     {
         return [
-            'detected_at' => 'datetime',
+            'metadata' => 'array',
         ];
     }
 
-    public function monitoredDomain(): BelongsTo
+    public function user(): BelongsTo
     {
-        return $this->belongsTo(MonitoredDomain::class);
+        return $this->belongsTo(User::class);
     }
 }

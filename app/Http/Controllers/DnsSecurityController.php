@@ -15,6 +15,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
@@ -28,6 +29,7 @@ class DnsSecurityController extends Controller
     {
         $twentyFourHoursAgo = now()->subHours(24);
         $user = request()->user();
+        $lastSynced = Cache::get('threats_last_synced');
 
         $recentThreatLogModels = SecurityThreatLog::query()
             ->with('monitoredDomain:id,domain')
@@ -58,6 +60,7 @@ class DnsSecurityController extends Controller
             ])
             ->orderBy('domain')
             ->get();
+        $domainModels->each->makeVisible('app_secret_token');
 
         $activeAccessRules = $this->loadActiveAccessRules($domainModels, $cloudflareIpBlockService);
 
@@ -84,9 +87,12 @@ class DnsSecurityController extends Controller
                 return [
                     'id' => $domain->id,
                     'domain' => $domain->domain,
+                    'infrastructure_type' => $domain->infrastructure_type,
+                    'app_secret_token' => $domain->app_secret_token,
                     'is_active' => $domain->is_active,
                     'is_owned' => $domain->is_owned,
                     'cloudflare_zone_id' => $domain->cloudflare_zone_id,
+                    'auto_ban_threshold' => (int) ($domain->auto_ban_threshold ?? 10),
                     'last_checked_at' => $domain->last_checked_at?->toIso8601String(),
                     'last_checked_at_formatted' => $domain->last_checked_at
                         ? $domain->last_checked_at->diffForHumans()
@@ -174,6 +180,7 @@ class DnsSecurityController extends Controller
             'recentThreatLogs' => $recentThreatLogs,
             'activeAccessRules' => $activeAccessRules,
             'threatAnalytics' => $threatAnalytics,
+            'last_synced_at' => $lastSynced instanceof Carbon ? $lastSynced->toIso8601String() : null,
             'alertSettings' => [
                 'email_enabled' => (bool) ($user?->security_alert_email_enabled ?? false),
                 'slack_enabled' => (bool) ($user?->security_alert_slack_enabled ?? false),
@@ -194,17 +201,29 @@ class DnsSecurityController extends Controller
     ): RedirectResponse
     {
         $normalizedDomain = $this->normalizeDomainInput((string) $request->input('domain', ''));
+        $infrastructureType = trim((string) $request->input('infrastructure_type', 'universal'));
+        $normalizedZoneId = trim((string) $request->input('cloudflare_zone_id', ''));
 
         $validator = Validator::make(
-            ['domain' => $normalizedDomain],
+            [
+                'domain' => $normalizedDomain,
+                'infrastructure_type' => $infrastructureType,
+                'cloudflare_zone_id' => $normalizedZoneId,
+            ],
             [
                 'domain' => ['required', 'string', 'max:255', 'unique:monitored_domains,domain'],
+                'infrastructure_type' => ['required', 'string', 'in:universal,cloudflare,app_middleware'],
+                'cloudflare_zone_id' => ['nullable', 'string', 'max:255'],
             ]
         );
 
-        $validator->after(function ($validator) use ($normalizedDomain): void {
+        $validator->after(function ($validator) use ($normalizedDomain, $infrastructureType, $normalizedZoneId): void {
             if (!$this->isValidDomain($normalizedDomain)) {
                 $validator->errors()->add('domain', 'Enter a valid domain name.');
+            }
+
+            if ($infrastructureType === 'cloudflare' && $normalizedZoneId === '') {
+                $validator->errors()->add('cloudflare_zone_id', 'A Cloudflare Zone ID is required for Cloudflare-backed infrastructure.');
             }
         });
 
@@ -212,18 +231,29 @@ class DnsSecurityController extends Controller
             throw new ValidationException($validator);
         }
 
+        $isOwned = match ($infrastructureType) {
+            'cloudflare', 'app_middleware' => true,
+            default => false,
+        };
+
         $domain = MonitoredDomain::create([
             'domain' => $normalizedDomain,
+            'infrastructure_type' => $infrastructureType,
+            'is_owned' => $isOwned,
+            'cloudflare_zone_id' => $infrastructureType === 'cloudflare' ? $normalizedZoneId : null,
             'is_active' => true,
         ]);
 
         try {
             $dnsResult = $scanner->scan($domain);
             $webResult = $webSecurityScanner->scan($domain);
+            $integrationMessage = $infrastructureType === 'app_middleware'
+                ? ' Integration credentials are ready in the domain settings view.'
+                : '';
 
             return back()->with(
                 'success',
-                "Domain '{$normalizedDomain}' added and scanned successfully. {$dnsResult['vulnerability_count']} DNS issue(s) detected. Web security score: {$webResult['scan']->security_score}/100."
+                "Domain '{$normalizedDomain}' added and scanned successfully. {$dnsResult['vulnerability_count']} DNS issue(s) detected. Web security score: {$webResult['scan']->security_score}/100.{$integrationMessage}"
             );
         } catch (Throwable $e) {
             Log::error("Initial DNS scan failed for {$normalizedDomain}: {$e->getMessage()}");
@@ -269,6 +299,37 @@ class DnsSecurityController extends Controller
 
     public function update(Request $request, MonitoredDomain $domain): RedirectResponse
     {
+        $validatedAutoBanThreshold = Validator::make(
+            [
+                'auto_ban_threshold' => $request->input('auto_ban_threshold', $domain->auto_ban_threshold ?? 10),
+            ],
+            [
+                'auto_ban_threshold' => ['required', 'integer', 'min:1'],
+            ]
+        )->validate();
+
+        $autoBanThreshold = (int) $validatedAutoBanThreshold['auto_ban_threshold'];
+
+        if ($domain->infrastructure_type === 'app_middleware') {
+            $domain->update([
+                'is_owned' => true,
+                'cloudflare_zone_id' => null,
+                'auto_ban_threshold' => $autoBanThreshold,
+            ]);
+
+            return back()->with('success', "Application middleware integration is active for '{$domain->domain}'.");
+        }
+
+        if ($domain->infrastructure_type === 'universal') {
+            $domain->update([
+                'is_owned' => false,
+                'cloudflare_zone_id' => null,
+                'auto_ban_threshold' => $autoBanThreshold,
+            ]);
+
+            return back()->with('success', "Universal posture scanning is active for '{$domain->domain}'.");
+        }
+
         $normalizedZoneId = trim((string) $request->input('cloudflare_zone_id', ''));
 
         $validator = Validator::make(
@@ -295,6 +356,7 @@ class DnsSecurityController extends Controller
         $domain->update([
             'is_owned' => $request->boolean('is_owned'),
             'cloudflare_zone_id' => $request->boolean('is_owned') ? $normalizedZoneId : null,
+            'auto_ban_threshold' => $autoBanThreshold,
         ]);
 
         return back()->with(

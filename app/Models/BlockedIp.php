@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-class SecurityThreatLog extends Model
+class BlockedIp extends Model
 {
     use HasFactory;
 
@@ -17,13 +17,9 @@ class SecurityThreatLog extends Model
      */
     protected $fillable = [
         'monitored_domain_id',
-        'attacker_ip',
-        'country',
-        'path_targeted',
-        'user_agent',
-        'action_taken',
-        'threat_source',
-        'detected_at',
+        'ip',
+        'is_global',
+        'reason',
     ];
 
     /**
@@ -32,7 +28,8 @@ class SecurityThreatLog extends Model
     protected function casts(): array
     {
         return [
-            'detected_at' => 'datetime',
+            'monitored_domain_id' => 'integer',
+            'is_global' => 'boolean',
         ];
     }
 

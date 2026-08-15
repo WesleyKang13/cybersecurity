@@ -2,9 +2,9 @@
 
 namespace Database\Seeders;
 
-use Illuminate\Database\Seeder;
-use App\Models\User;
 use App\Models\Company;
+use App\Models\User;
+use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
 
 class DatabaseSeeder extends Seeder
@@ -16,6 +16,8 @@ class DatabaseSeeder extends Seeder
             'name' => 'CyberSafe Sdn Bhd',
             'domain' => 'cybersafe.com.my',
             'is_active' => true,
+            'type' => Company::TYPE_PLATFORM,
+            'status' => Company::STATUS_ACTIVE,
         ]);
 
         // 2. Create the Admin User

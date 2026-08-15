@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AdminBlockedIpController;
 use App\Http\Controllers\AdminDashboardController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\DashboardController;
@@ -31,11 +32,21 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('dns-security.ip-lookup');
     Route::post('/dns-security/{domain}/scan', [DnsSecurityController::class, 'scan'])->name('dns-security.scan');
     Route::delete('/dns-security/{domain}', [DnsSecurityController::class, 'destroy'])->name('dns-security.destroy');
+});
 
-    Route::get('/admin/dashboard', [AdminDashboardController::class, 'index'])
-            ->name('admin.dashboard');
-    Route::post('/admin/users', [AdminDashboardController::class, 'storeUser'])->name('admin.users.store');
-    Route::put('/admin/users/{user}', [AdminDashboardController::class, 'updateUser'])->name('admin.users.update');
+Route::middleware(['auth', 'verified', 'admin'])->prefix('admin')->name('admin.')->group(function () {
+    Route::get('/dashboard', [AdminDashboardController::class, 'index'])->name('dashboard');
+    Route::get('/blocked-ips', [AdminBlockedIpController::class, 'index'])->name('blocked-ips.index');
+    Route::delete('/blocked-ips/{blockedIp}', [AdminBlockedIpController::class, 'destroy'])->name('blocked-ips.destroy');
+    Route::get('/threats/export', [AdminDashboardController::class, 'exportGlobalThreats'])->name('threats.export');
+    Route::get('/ip-intelligence/{ip}', [AdminDashboardController::class, 'getIpIntelligence'])
+        ->where('ip', '.*')
+        ->name('ip-intelligence');
+    Route::post('/domains/{domain}/toggle-status', [AdminDashboardController::class, 'toggleDomainStatus'])->name('domains.toggle-status');
+    Route::post('/domains/{domain}/rotate-token', [AdminDashboardController::class, 'rotateAppToken'])->name('domains.rotate-token');
+    Route::post('/users', [AdminDashboardController::class, 'storeUser'])->name('users.store');
+    Route::put('/users/{user}', [AdminDashboardController::class, 'updateUser'])->name('users.update');
+    Route::post('/queue/retry', [AdminDashboardController::class, 'retryAllFailedJobs'])->name('queue.retry');
 });
 
 Route::middleware('auth')->group(function () {

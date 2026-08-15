@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Models\MonitoredDomain;
+use App\Models\SecurityThreatLog;
 use App\Notifications\SecurityAlertNotification;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -20,6 +22,8 @@ class CloudflareThreatService
     private const API_ENDPOINT = 'https://api.cloudflare.com/client/v4/graphql';
     private const TIMEOUT_SECONDS = 5;
     private const EVENT_LIMIT = 100;
+    private const MIDDLEWARE_LOOKBACK_HOURS = 24;
+    private const BLOCKED_IP_CACHE_TTL_SECONDS = 600;
 
     public function __construct(
         private readonly SecurityAlertDispatcher $securityAlertDispatcher
@@ -33,20 +37,9 @@ class CloudflareThreatService
     {
         $token = (string) config('services.cloudflare.api_token', '');
 
-        if ($token === '') {
-            Log::warning('Cloudflare threat sync skipped: CLOUDFLARE_API_TOKEN is not configured.');
-
-            return [
-                'domains_processed' => 0,
-                'events_synced' => 0,
-                'failed' => 0,
-                'skipped' => 0,
-            ];
-        }
-
         $domains = MonitoredDomain::query()
+            ->where('is_active', true)
             ->where('is_owned', true)
-            ->whereNotNull('cloudflare_zone_id')
             ->orderBy('domain')
             ->get();
 
@@ -58,17 +51,37 @@ class CloudflareThreatService
         ];
 
         foreach ($domains as $domain) {
-            $zoneId = trim((string) $domain->cloudflare_zone_id);
-
-            if ($zoneId === '') {
-                $summary['skipped']++;
-
-                continue;
-            }
-
             try {
                 $summary['domains_processed']++;
-                $result = $this->syncDomainThreats($domain, $zoneId, $token);
+
+                if ($this->shouldProcessAsCloudflare($domain)) {
+                    $zoneId = trim((string) $domain->cloudflare_zone_id);
+
+                    if ($token === '') {
+                        $summary['skipped']++;
+                        Log::warning("Cloudflare threat sync skipped for {$domain->domain}: CLOUDFLARE_API_TOKEN is not configured.");
+
+                        continue;
+                    }
+
+                    if ($zoneId === '') {
+                        $summary['skipped']++;
+                        Log::warning("Cloudflare threat sync skipped for {$domain->domain}: Cloudflare Zone ID is missing.");
+
+                        continue;
+                    }
+
+                    Log::info("Processing Tier 2 (Cloudflare) threats for: {$domain->domain}");
+                    $result = $this->syncDomainThreats($domain, $zoneId, $token);
+                } elseif ($domain->infrastructure_type === 'app_middleware') {
+                    Log::info("Processing Tier 3 (Middleware) telemetry for: {$domain->domain}");
+                    $result = $this->processMiddlewareTelemetry($domain);
+                } else {
+                    $summary['skipped']++;
+
+                    continue;
+                }
+
                 $summary['events_synced'] += $result['events_synced'];
 
                 $this->dispatchAttackSpikeAlert($domain, $result['new_events_count']);
@@ -82,6 +95,12 @@ class CloudflareThreatService
         }
 
         return $summary;
+    }
+
+    private function shouldProcessAsCloudflare(MonitoredDomain $domain): bool
+    {
+        return $domain->infrastructure_type === 'cloudflare'
+            || filled($domain->cloudflare_zone_id);
     }
 
     /**
@@ -197,6 +216,101 @@ GRAPHQL;
             'events_synced' => $synced,
             'new_events_count' => $newEventsCount,
         ];
+    }
+
+    /**
+     * @return array{events_synced: int, new_events_count: int}
+     */
+    private function processMiddlewareTelemetry(MonitoredDomain $domain): array
+    {
+        $since = $this->resolveMiddlewareSyncStart();
+        $baseQuery = $domain->securityThreatLogs()
+            ->where('threat_source', 'app_middleware');
+
+        $newEventsCount = (clone $baseQuery)
+            ->where('created_at', '>=', $since)
+            ->count();
+
+        $topTargetedPaths = (clone $baseQuery)
+            ->selectRaw('path_targeted, COUNT(*) as event_count')
+            ->whereNotNull('path_targeted')
+            ->where('path_targeted', '!=', '')
+            ->groupBy('path_targeted')
+            ->orderByDesc('event_count')
+            ->limit(5)
+            ->get()
+            ->map(static function (SecurityThreatLog $log): array {
+                return [
+                    'path_targeted' => $log->path_targeted,
+                    'count' => (int) $log->event_count,
+                ];
+            })
+            ->values()
+            ->all();
+
+        $topAttackerIps = (clone $baseQuery)
+            ->selectRaw('attacker_ip, COUNT(*) as event_count')
+            ->whereNotNull('attacker_ip')
+            ->where('attacker_ip', '!=', '')
+            ->groupBy('attacker_ip')
+            ->orderByDesc('event_count')
+            ->limit(10)
+            ->get()
+            ->map(static function (SecurityThreatLog $log): array {
+                return [
+                    'attacker_ip' => $log->attacker_ip,
+                    'count' => (int) $log->event_count,
+                ];
+            })
+            ->values()
+            ->all();
+
+        $blockedIps = (clone $baseQuery)
+            ->where('action_taken', 'block')
+            ->distinct()
+            ->orderBy('attacker_ip')
+            ->pluck('attacker_ip')
+            ->filter(static fn (mixed $ip): bool => is_string($ip) && trim($ip) !== '')
+            ->values()
+            ->all();
+
+        Cache::put(
+            "telemetry_blocked_ips:{$domain->id}",
+            $blockedIps,
+            now()->addSeconds(self::BLOCKED_IP_CACHE_TTL_SECONDS)
+        );
+
+        Cache::put(
+            "middleware_threat_summary:{$domain->id}",
+            [
+                'aggregated_at' => now()->toIso8601String(),
+                'new_events_count' => $newEventsCount,
+                'top_targeted_paths' => $topTargetedPaths,
+                'top_attacker_ips' => $topAttackerIps,
+                'blocked_ips_count' => count($blockedIps),
+            ],
+            now()->addHours(1)
+        );
+
+        return [
+            'events_synced' => $newEventsCount,
+            'new_events_count' => $newEventsCount,
+        ];
+    }
+
+    private function resolveMiddlewareSyncStart(): Carbon
+    {
+        $lastSynced = Cache::get('threats_last_synced');
+
+        if ($lastSynced instanceof Carbon) {
+            return $lastSynced;
+        }
+
+        if ($lastSynced instanceof \DateTimeInterface) {
+            return Carbon::instance(\DateTimeImmutable::createFromInterface($lastSynced));
+        }
+
+        return now()->subHours(self::MIDDLEWARE_LOOKBACK_HOURS);
     }
 
     private function nullableString(mixed $value): ?string
