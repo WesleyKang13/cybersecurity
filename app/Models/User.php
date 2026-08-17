@@ -34,6 +34,18 @@ class User extends Authenticatable
         self::ROLE_CLIENT_USER,
     ];
 
+    public const CLIENT_ROLES = [
+        self::ROLE_CLIENT_ADMIN,
+        self::ROLE_CLIENT_USER,
+    ];
+
+    public const CLIENT_ASSIGNABLE_TRANSITIONAL_ROLES = [
+        self::ROLE_CLIENT_ADMIN,
+        self::ROLE_CLIENT_USER,
+        self::LEGACY_ROLE_USER,
+        self::LEGACY_ROLE_MEMBER,
+    ];
+
     /**
      * The attributes that are mass assignable.
      *
@@ -150,12 +162,48 @@ class User extends Authenticatable
         return $this->belongsToCompanyType(Company::TYPE_CLIENT);
     }
 
+    public function belongsToActivePlatformCompany(): bool
+    {
+        return $this->belongsToActiveCompanyType(Company::TYPE_PLATFORM);
+    }
+
+    public function belongsToActiveClientCompany(): bool
+    {
+        return $this->belongsToActiveCompanyType(Company::TYPE_CLIENT);
+    }
+
+    public function hasPlatformAccess(): bool
+    {
+        return $this->isPlatformUser() && $this->belongsToActivePlatformCompany();
+    }
+
+    public function hasPlatformOwnerAccess(): bool
+    {
+        return $this->isPlatformOwner() && $this->belongsToActivePlatformCompany();
+    }
+
+    public function hasClientAdminPortalAccess(): bool
+    {
+        return $this->isClientAdmin() && $this->belongsToActiveClientCompany();
+    }
+
+    public function hasClientUserPortalAccess(): bool
+    {
+        return $this->isClientUser() && $this->belongsToActiveClientCompany();
+    }
+
+    public function isEligibleForClientAssignment(): bool
+    {
+        return $this->company_id === null
+            && in_array($this->role, self::CLIENT_ASSIGNABLE_TRANSITIONAL_ROLES, true);
+    }
+
     /**
-     * Transitional platform-admin check used by the existing admin area.
+     * Backward-compatible alias for existing application code.
      */
     public function isAdmin(): bool
     {
-        return $this->isPlatformUser() && $this->belongsToPlatformCompany();
+        return $this->hasPlatformAccess();
     }
 
     public static function isRoleValidForCompany(string $role, ?Company $company): bool
@@ -188,14 +236,27 @@ class User extends Authenticatable
 
     private function belongsToCompanyType(string $companyType): bool
     {
+        return $this->relatedCompany()?->type === $companyType;
+    }
+
+    private function belongsToActiveCompanyType(string $companyType): bool
+    {
+        $company = $this->relatedCompany();
+
+        return $company?->type === $companyType
+            && $company->status === Company::STATUS_ACTIVE;
+    }
+
+    private function relatedCompany(): ?Company
+    {
         if ($this->company_id === null) {
-            return false;
+            return null;
         }
 
-        $company = $this->relationLoaded('company')
-            ? $this->company
-            : $this->company()->first();
+        if (! $this->relationLoaded('company')) {
+            $this->setRelation('company', $this->company()->first());
+        }
 
-        return $company?->type === $companyType;
+        return $this->company;
     }
 }

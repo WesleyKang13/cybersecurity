@@ -17,9 +17,15 @@ return Application::configure(basePath: dirname(__DIR__))
             \Illuminate\Http\Middleware\AddLinkHeadersForPreloadedAssets::class,
         ]);
         $middleware->alias([
-            'admin' => \App\Http\Middleware\EnsureUserIsAdmin::class,
+            'platform' => \App\Http\Middleware\EnsurePlatformUser::class,
+            'platform.owner' => \App\Http\Middleware\EnsurePlatformOwner::class,
+            'client.admin' => \App\Http\Middleware\EnsureClientAdmin::class,
         ]);
-        $middleware->trustProxies(at:'*');
+        $middleware->redirectUsersTo(fn (\Illuminate\Http\Request $request): string => route(
+            \App\Support\PortalContext::landingRouteName($request->user()),
+            absolute: false
+        ));
+        $middleware->trustProxies(at: '*');
         //
     })
     ->withExceptions(function (Exceptions $exceptions): void {

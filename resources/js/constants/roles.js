@@ -5,9 +5,6 @@ export const USER_ROLES = Object.freeze({
     CLIENT_USER: 'client_user',
 });
 
-export const isPlatformAdminRole = (role) =>
-    role === USER_ROLES.PLATFORM_OWNER || role === USER_ROLES.PLATFORM_STAFF;
-
 export const formatUserRole = (role) =>
     String(role || 'unclassified')
         .split('_')

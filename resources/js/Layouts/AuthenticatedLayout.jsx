@@ -1,90 +1,94 @@
-import ApplicationLogo from '@/Components/ApplicationLogo';
 import Dropdown from '@/Components/Dropdown';
 import NavLink from '@/Components/NavLink';
 import ResponsiveNavLink from '@/Components/ResponsiveNavLink';
-import { isPlatformAdminRole } from '@/constants/roles';
 import { Link, usePage } from '@inertiajs/react';
 import { useState } from 'react';
 
+const navigationHref = (item) =>
+    route(item.route, item.parameters || undefined);
+
+const navigationIsActive = (item, currentUrl) => {
+    const routeMatches = item.active_routes.some((routeName) => route().current(routeName));
+
+    if (!routeMatches) {
+        return false;
+    }
+
+    const currentTab = new URLSearchParams(currentUrl.split('?')[1] || '').get('tab');
+    const requestedTab = item.parameters?.tab || null;
+
+    if (requestedTab) {
+        return route().current(item.route) ? currentTab === requestedTab : true;
+    }
+
+    if (item.key === 'security-overview') {
+        return currentTab === null;
+    }
+
+    return true;
+};
+
 export default function AuthenticatedLayout({ header, children }) {
-    const user = usePage().props.auth.user;
+    const { props, url } = usePage();
+    const { user, portal = {} } = props.auth;
+    const navigation = portal.navigation || [];
+    const sidebarNavigation = portal.sidebar_navigation || [];
+    const isPlatform = portal.experience === 'platform';
+    const mobileNavigation = isPlatform ? sidebarNavigation : navigation;
+    const homeRoute = portal.landing_route || 'dashboard';
+    const contextName = portal.company?.name || user.name;
 
     const [showingNavigationDropdown, setShowingNavigationDropdown] =
         useState(false);
 
     return (
         <div className="min-h-screen bg-gray-100">
-            <nav className="border-b border-gray-100 bg-white">
-                {/* 👇 CHANGED: max-w-7xl -> max-w-full */}
+            <nav className="border-b border-gray-200 bg-white shadow-sm">
                 <div className="mx-auto max-w-full px-4 sm:px-6 lg:px-8">
                     <div className="flex h-16 justify-between">
-                        <div className="flex">
-                            <div className="shrink-0 flex items-start">
-                                <Link href="/">
-                                    <img
-                                        src="/images/logo.png"
-                                        alt="Futuristic"
-                                        className="block h-16 w-auto rounded-lg transition hover:scale-105"
-                                    />
-                                </Link>
+                        <div className="flex min-w-0 items-center">
+                            <Link href={route(homeRoute)} className="flex shrink-0 items-center">
+                                <img
+                                    src="/images/logo.png"
+                                    alt="CyberSafe"
+                                    className="block h-14 w-auto rounded-lg transition hover:scale-105"
+                                />
+                            </Link>
+
+                            <div className="ml-3 hidden min-w-0 border-l border-gray-200 pl-3 md:block">
+                                <p className="truncate text-sm font-semibold text-gray-900">
+                                    {contextName}
+                                </p>
+                                <p className="truncate text-xs font-medium text-gray-500">
+                                    {portal.title || 'Security Portal'}
+                                </p>
                             </div>
 
-                            <div className="hidden space-x-8 sm:-my-px sm:ms-10 sm:flex">
-                                <NavLink
-                                    href={route('dashboard')}
-                                    active={route().current('dashboard')}
-                                >
-                                    Dashboard
-                                </NavLink>
-
-                                <NavLink href={route('sms.index')} active={route().current('sms.index')}>
-                                    SMS Detect
-                                </NavLink>
-
-                                <NavLink
-                                    href={route('dns-security.index')}
-                                    active={route().current('dns-security.*')}
-                                >
-                                    DNS Manager
-                                </NavLink>
-                            </div>
-                        </div>
-
-                        <div className="hidden sm:ms-6 sm:flex sm:items-center">
-                            {isPlatformAdminRole(user.role) && (
-                                <div className="mr-4 flex items-center gap-4">
-                                    <Link
-                                        href={route('admin.dashboard')}
-                                        className={`text-sm font-medium transition duration-150 ease-in-out ${
-                                            route().current('admin.dashboard')
-                                                ? 'border-b-2 border-indigo-600 text-indigo-600'
-                                                : 'text-gray-500 hover:text-gray-700'
-                                        }`}
-                                    >
-                                        Admin Dashboard
-                                    </Link>
-                                    <Link
-                                        href={route('admin.blocked-ips.index')}
-                                        className={`text-sm font-medium transition duration-150 ease-in-out ${
-                                            route().current('admin.blocked-ips.*')
-                                                ? 'border-b-2 border-indigo-600 text-indigo-600'
-                                                : 'text-gray-500 hover:text-gray-700'
-                                        }`}
-                                    >
-                                        Blocked IPs
-                                    </Link>
+                            {navigation.length > 0 && (
+                                <div className="ml-6 hidden h-full items-center gap-4 xl:flex">
+                                    {navigation.map((item) => (
+                                        <NavLink
+                                            key={item.key}
+                                            href={navigationHref(item)}
+                                            active={navigationIsActive(item, url)}
+                                        >
+                                            {item.label}
+                                        </NavLink>
+                                    ))}
                                 </div>
                             )}
+                        </div>
+
+                        <div className={isPlatform ? 'hidden shrink-0 items-center lg:flex' : 'hidden shrink-0 items-center xl:flex'}>
                             <div className="relative ms-3">
                                 <Dropdown>
                                     <Dropdown.Trigger>
                                         <span className="inline-flex rounded-md">
                                             <button
                                                 type="button"
-                                                className="inline-flex items-center rounded-md border border-transparent bg-white px-3 py-2 text-sm font-medium leading-4 text-gray-500 transition duration-150 ease-in-out hover:text-gray-700 focus:outline-none"
+                                                className="inline-flex items-center rounded-md border border-transparent bg-white px-3 py-2 text-sm font-medium leading-4 text-gray-500 transition hover:text-gray-700 focus:outline-none"
                                             >
                                                 {user.name}
-
                                                 <svg
                                                     className="-me-0.5 ms-2 h-4 w-4"
                                                     xmlns="http://www.w3.org/2000/svg"
@@ -102,9 +106,7 @@ export default function AuthenticatedLayout({ header, children }) {
                                     </Dropdown.Trigger>
 
                                     <Dropdown.Content>
-                                        <Dropdown.Link
-                                            href={route('profile.edit')}
-                                        >
+                                        <Dropdown.Link href={route('profile.edit')}>
                                             Profile
                                         </Dropdown.Link>
                                         <Dropdown.Link
@@ -119,38 +121,22 @@ export default function AuthenticatedLayout({ header, children }) {
                             </div>
                         </div>
 
-                        <div className="-me-2 flex items-center sm:hidden">
+                        <div className={isPlatform ? '-me-2 flex items-center lg:hidden' : '-me-2 flex items-center xl:hidden'}>
                             <button
-                                onClick={() =>
-                                    setShowingNavigationDropdown(
-                                        (previousState) => !previousState,
-                                    )
-                                }
-                                className="inline-flex items-center justify-center rounded-md p-2 text-gray-400 transition duration-150 ease-in-out hover:bg-gray-100 hover:text-gray-500 focus:bg-gray-100 focus:text-gray-500 focus:outline-none"
+                                onClick={() => setShowingNavigationDropdown((open) => !open)}
+                                className="inline-flex items-center justify-center rounded-md p-2 text-gray-400 transition hover:bg-gray-100 hover:text-gray-500 focus:bg-gray-100 focus:text-gray-500 focus:outline-none"
+                                aria-label="Toggle navigation"
                             >
-                                <svg
-                                    className="h-6 w-6"
-                                    stroke="currentColor"
-                                    fill="none"
-                                    viewBox="0 0 24 24"
-                                >
+                                <svg className="h-6 w-6" stroke="currentColor" fill="none" viewBox="0 0 24 24">
                                     <path
-                                        className={
-                                            !showingNavigationDropdown
-                                                ? 'inline-flex'
-                                                : 'hidden'
-                                        }
+                                        className={!showingNavigationDropdown ? 'inline-flex' : 'hidden'}
                                         strokeLinecap="round"
                                         strokeLinejoin="round"
                                         strokeWidth="2"
                                         d="M4 6h16M4 12h16M4 18h16"
                                     />
                                     <path
-                                        className={
-                                            showingNavigationDropdown
-                                                ? 'inline-flex'
-                                                : 'hidden'
-                                        }
+                                        className={showingNavigationDropdown ? 'inline-flex' : 'hidden'}
                                         strokeLinecap="round"
                                         strokeLinejoin="round"
                                         strokeWidth="2"
@@ -162,63 +148,39 @@ export default function AuthenticatedLayout({ header, children }) {
                     </div>
                 </div>
 
-                <div
-                    className={
-                        (showingNavigationDropdown ? 'block' : 'hidden') +
-                        ' sm:hidden'
-                    }
-                >
-                    <div className="space-y-1 pb-3 pt-2">
-                        <ResponsiveNavLink
-                            href={route('dashboard')}
-                            active={route().current('dashboard')}
-                        >
-                            Dashboard
-                        </ResponsiveNavLink>
-                        <ResponsiveNavLink
-                            href={route('sms.index')}
-                            active={route().current('sms.index')}
-                        >
-                            SMS Detect
-                        </ResponsiveNavLink>
-                        <ResponsiveNavLink
-                            href={route('dns-security.index')}
-                            active={route().current('dns-security.*')}
-                        >
-                            DNS Manager
-                        </ResponsiveNavLink>
-                        {isPlatformAdminRole(user.role) && (
-                            <>
+                <div className={`${showingNavigationDropdown ? 'block' : 'hidden'} ${isPlatform ? 'lg:hidden' : 'xl:hidden'}`}>
+                    <div className="border-t border-gray-100 px-3 pb-3 pt-3">
+                        <div className="mb-3 rounded-lg bg-gray-50 px-3 py-2">
+                            <p className="text-sm font-semibold text-gray-900">{contextName}</p>
+                            <p className="text-xs font-medium text-gray-500">
+                                {portal.title || 'Security Portal'}
+                            </p>
+                        </div>
+
+                        {mobileNavigation.map((item, index) => (
+                            <div key={item.key}>
+                                {(index === 0 || mobileNavigation[index - 1].section !== item.section) && (
+                                    <p className="px-3 pb-1 pt-3 text-xs font-semibold uppercase tracking-wider text-gray-400">
+                                        {item.section}
+                                    </p>
+                                )}
                                 <ResponsiveNavLink
-                                    href={route('admin.dashboard')}
-                                    active={route().current('admin.dashboard')}
+                                    href={navigationHref(item)}
+                                    active={navigationIsActive(item, url)}
                                 >
-                                    Admin Dashboard
+                                    {item.label}
                                 </ResponsiveNavLink>
-                                <ResponsiveNavLink
-                                    href={route('admin.blocked-ips.index')}
-                                    active={route().current('admin.blocked-ips.*')}
-                                >
-                                    Blocked IPs
-                                </ResponsiveNavLink>
-                            </>
-                        )}
+                            </div>
+                        ))}
                     </div>
 
                     <div className="border-t border-gray-200 pb-1 pt-4">
                         <div className="px-4">
-                            <div className="text-base font-medium text-gray-800">
-                                {user.name}
-                            </div>
-                            <div className="text-sm font-medium text-gray-500">
-                                {user.email}
-                            </div>
+                            <div className="text-base font-medium text-gray-800">{user.name}</div>
+                            <div className="text-sm font-medium text-gray-500">{user.email}</div>
                         </div>
 
                         <div className="mt-3 space-y-1">
-                            <ResponsiveNavLink href={route('profile.edit')}>
-                                Profile
-                            </ResponsiveNavLink>
                             <ResponsiveNavLink
                                 method="post"
                                 href={route('logout')}
@@ -231,16 +193,44 @@ export default function AuthenticatedLayout({ header, children }) {
                 </div>
             </nav>
 
-            {header && (
-                <header className="bg-white shadow">
-                    {/* 👇 CHANGED: max-w-7xl -> max-w-full */}
-                    <div className="mx-auto max-w-full px-4 py-6 sm:px-6 lg:px-8">
-                        {header}
-                    </div>
-                </header>
-            )}
+            <div className={isPlatform ? 'flex min-h-[calc(100vh-4rem)]' : ''}>
+                {isPlatform && (
+                    <aside className="hidden w-72 shrink-0 border-r border-gray-200 bg-white lg:block">
+                        <nav className="sticky top-0 max-h-[calc(100vh-4rem)] space-y-1 overflow-y-auto p-5">
+                            {sidebarNavigation.map((item, index) => (
+                                <div key={item.key}>
+                                    {(index === 0 || sidebarNavigation[index - 1].section !== item.section) && (
+                                        <p className={`px-3 pb-2 text-xs font-semibold uppercase tracking-wider text-gray-400 ${index === 0 ? 'pt-0' : 'pt-5'}`}>
+                                            {item.section}
+                                        </p>
+                                    )}
+                                    <Link
+                                        href={navigationHref(item)}
+                                        className={`flex items-center rounded-md px-3 py-2 text-sm font-medium transition ${navigationIsActive(item, url)
+                                            ? 'bg-indigo-50 text-indigo-700'
+                                            : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                                        }`}
+                                    >
+                                        {item.label}
+                                    </Link>
+                                </div>
+                            ))}
+                        </nav>
+                    </aside>
+                )}
 
-            <main>{children}</main>
+                <div className="min-w-0 flex-1">
+                    {header && (
+                        <header className="bg-white shadow">
+                            <div className="mx-auto max-w-full px-4 py-6 sm:px-6 lg:px-8">
+                                {header}
+                            </div>
+                        </header>
+                    )}
+
+                    <main>{children}</main>
+                </div>
+            </div>
         </div>
     );
 }

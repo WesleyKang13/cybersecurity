@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\BlockedIp;
 use App\Models\MonitoredDomain;
 use App\Models\ScannedEmail;
 use App\Models\ScannedSms;
@@ -9,6 +10,7 @@ use App\Models\SecurityThreatLog;
 use App\Models\SystemAuditLog;
 use App\Models\User;
 use App\Models\WhitelistedDomain;
+use App\Services\AccountSetupService;
 use App\Services\IpIntelligenceService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -20,6 +22,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Throwable;
 
@@ -29,21 +32,7 @@ class AdminDashboardController extends Controller
     {
         $user = Auth::user();
 
-        if (! $user->isAdmin()) {
-            abort(403);
-        }
-
-        // --- EXISTING CODE (KEPT AS IS) ---
-
-        // 1. Fetch High Threat Emails ONLY (Sorted by newest first)
-        $emails = ScannedEmail::with('user:id,name')
-            ->where('is_threat', true)
-            ->orderBy('created_at', 'desc')
-            ->get()
-            // We keep this mapping so your frontend icons don't break
-            ->map(fn ($item) => [...$item->toArray(), 'type' => 'email']);
-
-        // 2. Fetch All Users (For the User Management Sidebar)
+        // Fetch platform-company users for the Platform Staff view.
         $companyUsers = User::where('company_id', $user->company_id)
             ->orderBy('created_at', 'desc')
             ->get();
@@ -231,9 +220,62 @@ class AdminDashboardController extends Controller
             })
             ->values()
             ->all();
+        $securityThreatEvents = SecurityThreatLog::query()
+            ->with('monitoredDomain:id,domain,infrastructure_type')
+            ->orderByDesc('detected_at')
+            ->limit(100)
+            ->get()
+            ->map(function (SecurityThreatLog $event): array {
+                return [
+                    'id' => $event->id,
+                    'detected_at' => $event->detected_at?->toIso8601String(),
+                    'threat_source' => $event->threat_source,
+                    'attacker_ip' => $event->attacker_ip,
+                    'country' => $event->country,
+                    'path_targeted' => $event->path_targeted,
+                    'action_taken' => $event->action_taken,
+                    'user_agent' => $event->user_agent,
+                    'monitored_domain' => $event->monitoredDomain ? [
+                        'id' => $event->monitoredDomain->id,
+                        'domain' => $event->monitoredDomain->domain,
+                        'infrastructure_type' => $event->monitoredDomain->infrastructure_type,
+                    ] : null,
+                ];
+            })
+            ->values();
+        $emailThreatQuery = ScannedEmail::query()->where('is_threat', true);
+        $monitoredDomainsTotal = MonitoredDomain::query()->count();
+        $activeMonitoredDomains = MonitoredDomain::query()->where('is_active', true)->count();
+        $requestedView = (string) $request->query('tab', '');
+        $allowedViews = ['threats', 'reports', 'domains', 'system', 'intelligence', 'tier3', 'audit'];
+
+        if ($user->hasPlatformOwnerAccess()) {
+            $allowedViews[] = 'users';
+        }
+
+        $activeView = in_array($requestedView, $allowedViews, true)
+            ? $requestedView
+            : ($reportData !== null ? 'reports' : 'overview');
 
         return Inertia::render('Admin/Dashboard', [
-            'threats' => $emails,
+            'active_view' => $activeView,
+            'security_overview' => [
+                'threat_events_total' => SecurityThreatLog::query()->count(),
+                'threat_events_last_24_hours' => SecurityThreatLog::query()
+                    ->where('detected_at', '>=', now()->subDay())
+                    ->count(),
+                'email_threats_total' => (clone $emailThreatQuery)->count(),
+                'high_critical_email_threats' => (clone $emailThreatQuery)
+                    ->whereIn('severity', ['high', 'critical', 'HIGH', 'CRITICAL'])
+                    ->count(),
+                'monitored_domains_total' => $monitoredDomainsTotal,
+                'active_monitored_domains' => $activeMonitoredDomains,
+                'blocked_ips_total' => BlockedIp::query()->count(),
+                'pending_jobs' => $pendingJobsCount,
+                'failed_jobs' => $failedJobsCount,
+                'recent_activity' => $securityThreatEvents->take(5)->values()->all(),
+            ],
+            'security_threat_events' => $securityThreatEvents->all(),
             'users' => $companyUsers,
             'reportData' => $reportData,
             'filters' => $request->only(['start_date', 'end_date']),
@@ -250,12 +292,6 @@ class AdminDashboardController extends Controller
 
     public function exportGlobalThreats(Request $request): JsonResponse
     {
-        $user = Auth::user();
-
-        if (! $user->isAdmin()) {
-            abort(403);
-        }
-
         $logs = SecurityThreatLog::query()
             ->with('monitoredDomain:id,domain')
             ->orderByDesc('detected_at')
@@ -271,12 +307,6 @@ class AdminDashboardController extends Controller
 
     public function getIpIntelligence(string $ip, IpIntelligenceService $ipIntelligenceService): JsonResponse
     {
-        $user = Auth::user();
-
-        if (! $user->isAdmin()) {
-            abort(403);
-        }
-
         if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
             return response()->json([
                 'success' => false,
@@ -311,10 +341,6 @@ class AdminDashboardController extends Controller
     {
         $user = Auth::user();
 
-        if (! $user->isAdmin()) {
-            abort(403);
-        }
-
         if ($domain->infrastructure_type !== 'app_middleware') {
             return back()->with('error', 'Token rotation is only available for Tier 3 middleware domains.');
         }
@@ -340,10 +366,6 @@ class AdminDashboardController extends Controller
     public function toggleDomainStatus(MonitoredDomain $domain): RedirectResponse
     {
         $user = Auth::user();
-
-        if (! $user->isAdmin()) {
-            abort(403);
-        }
 
         if ($domain->infrastructure_type !== 'app_middleware') {
             return back()->with('error', 'Status toggling is only available for Tier 3 middleware domains.');
@@ -371,10 +393,6 @@ class AdminDashboardController extends Controller
     {
         $user = Auth::user();
 
-        if (! $user->isAdmin()) {
-            abort(403);
-        }
-
         $failedJobsTable = (string) config('queue.failed.table', 'failed_jobs');
 
         if (! Schema::hasTable($failedJobsTable)) {
@@ -398,36 +416,46 @@ class AdminDashboardController extends Controller
         return back()->with('success', 'All failed jobs have been queued for retry.');
     }
 
-    // Function to Add a User (Kept exactly as is)
-    public function storeUser(Request $request)
+    public function storeUser(Request $request, AccountSetupService $accountSetup): RedirectResponse
     {
-        $admin = Auth::user();
+        $admin = $request->user();
+
+        abort_unless($admin?->hasPlatformOwnerAccess(), 403);
 
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users',
         ]);
 
-        User::create([
+        $user = User::create([
             'name' => $request->name,
             'email' => $request->email,
-            'password' => Hash::make('password'),
+            'password' => $accountSetup->randomUnusablePasswordHash(),
             'company_id' => $admin->company_id,
             'role' => User::ROLE_PLATFORM_STAFF,
         ]);
 
-        return redirect()->back();
+        $setupUrl = $accountSetup->issue($user);
+        $response = back()->with('success', 'Platform staff account created and a secure setup link was issued.');
+
+        if (app()->environment(['local', 'testing'])) {
+            $response->with('account_setup_url', $setupUrl);
+        }
+
+        return $response;
     }
 
     // Function to Edit/Update a User
     public function updateUser(Request $request, User $user)
     {
-        $admin = Auth::user();
+        $admin = $request->user();
 
-        // 1. Security Check: Only admins can edit, and only users in their company
-        if (! $admin->isAdmin() || $user->company_id !== $admin->company_id) {
+        // Owner-only route protection is repeated here at the sensitive mutation boundary.
+        if (! $admin?->hasPlatformOwnerAccess() || $user->company_id !== $admin->company_id) {
             abort(403, 'Unauthorized action.');
         }
+
+        $user->loadMissing('company');
 
         // 2. Validate input
         $validated = $request->validate([
@@ -445,8 +473,25 @@ class AdminDashboardController extends Controller
             unset($validated['password']);
         }
 
-        // 4. Update the user
-        $user->update($validated);
+        // 4. Lock owner rows while enforcing the last-owner safety rule.
+        DB::transaction(function () use ($admin, $user, $validated): void {
+            if ($user->isPlatformOwner() && $validated['role'] !== User::ROLE_PLATFORM_OWNER) {
+                $ownerCount = User::query()
+                    ->where('company_id', $admin->company_id)
+                    ->where('role', User::ROLE_PLATFORM_OWNER)
+                    ->lockForUpdate()
+                    ->get(['id'])
+                    ->count();
+
+                if ($ownerCount <= 1) {
+                    throw ValidationException::withMessages([
+                        'role' => 'The last platform owner cannot be demoted.',
+                    ]);
+                }
+            }
+
+            $user->update($validated);
+        });
 
         return redirect()->back();
     }

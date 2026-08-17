@@ -75,11 +75,11 @@ export default function BlockedIpsIndex({ auth, blockedIps = [] }) {
                             </div>
 
                             <Link
-                                href={route('admin.dashboard')}
+                                href={route('platform.dashboard')}
                                 className="inline-flex items-center rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 shadow-sm transition hover:bg-gray-100"
                             >
                                 <ArrowLeft className="mr-2 h-4 w-4" />
-                                Back to Admin Dashboard
+                                Back to Security Overview
                             </Link>
                         </div>
 

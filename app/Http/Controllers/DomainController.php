@@ -8,12 +8,12 @@ use Illuminate\Support\Facades\Cache;
 
 class DomainController extends Controller
 {
-
-    public function index(){
+    public function index()
+    {
         $domains = WhitelistedDomain::orderBy('created_at', 'desc')->get();
 
-        return inertia('Admin/DomainManager', [
-            'domains' => $domains
+        return inertia('Admin/Whitelist', [
+            'domains' => $domains,
         ]);
     }
 
@@ -61,6 +61,7 @@ class DomainController extends Controller
         Cache::forget('trusted_domains');
 
         $status = $domain->is_active ? 'Activated' : 'Deactivated';
+
         return back()->with('success', "Domain '{$domain->domain}' is now {$status}.");
     }
 

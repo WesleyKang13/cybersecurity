@@ -3,11 +3,14 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\ProfileUpdateRequest;
+use App\Models\User;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redirect;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -51,9 +54,28 @@ class ProfileController extends Controller
 
         $user = $request->user();
 
-        Auth::logout();
+        if ($user->hasPlatformOwnerAccess()) {
+            DB::transaction(function () use ($user): void {
+                $ownerCount = User::query()
+                    ->where('company_id', $user->company_id)
+                    ->where('role', User::ROLE_PLATFORM_OWNER)
+                    ->lockForUpdate()
+                    ->get(['id'])
+                    ->count();
 
-        $user->delete();
+                if ($ownerCount <= 1) {
+                    throw ValidationException::withMessages([
+                        'password' => 'The last platform owner cannot delete their account.',
+                    ]);
+                }
+
+                Auth::logout();
+                $user->delete();
+            });
+        } else {
+            Auth::logout();
+            $user->delete();
+        }
 
         $request->session()->invalidate();
         $request->session()->regenerateToken();

@@ -1,8 +1,7 @@
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout';
-import { Head, Link, router, useForm, usePage } from '@inertiajs/react';
-import { useState } from 'react';
+import { Head, router, useForm, usePage } from '@inertiajs/react';
+import { useEffect, useState } from 'react';
 import IpIntelligenceModal from '@/Pages/Partials/IpIntelligenceModal';
-import ThreatDetailModal from '@/Pages/Partials/ThreatDetailModal';
 import Modal from '@/Components/Modal';
 import SecondaryButton from '@/Components/SecondaryButton';
 import PrimaryButton from '@/Components/PrimaryButton';
@@ -11,11 +10,13 @@ import InputLabel from '@/Components/InputLabel';
 import InputError from '@/Components/InputError';
 import { formatUserRole, USER_ROLES } from '@/constants/roles';
 import {
-    ShieldAlert, Mail, MessageSquare, Users, LayoutDashboard, UserPlus,
-    FileText, Calendar, TrendingUp, CheckCircle, Smartphone, ShieldCheck,
+    Mail, MessageSquare, Users, UserPlus,
+    Calendar, TrendingUp, CheckCircle, Smartphone,
     Server, RefreshCw, AlertTriangle, Globe2, Download, KeyRound, Eye, EyeOff, History
 } from 'lucide-react';
 import DomainManagerTab from './DomainManager';
+import SecurityOverviewPanel from './Partials/SecurityOverviewPanel';
+import ThreatOverviewPanel from './Partials/ThreatOverviewPanel';
 
 const parseFailedJobPayload = (payload) => {
     if (!payload || typeof payload !== 'string') {
@@ -76,7 +77,9 @@ const getAuditActorLabel = (user) => {
 
 export default function AdminDashboard({
     auth,
-    threats,
+    active_view = 'overview',
+    security_overview = {},
+    security_threat_events = [],
     users,
     reportData,
     filters,
@@ -89,20 +92,27 @@ export default function AdminDashboard({
     tier_3_domains = [],
     audit_logs = [],
 }) {
-    // 👇 Active Tab State
-    const { props } = usePage(); // Get page props to check for errors
+    const { props } = usePage();
     const { flash } = props;
+    const canManagePlatformUsers = auth?.portal?.can_manage_platform_users === true;
+    const hasFormErrors = canManagePlatformUsers
+        && props.errors
+        && Object.keys(props.errors).length > 0;
 
     const [activeTab, setActiveTab] = useState(() => {
-        if (reportData) return 'reports';
-        // If there are errors (e.g. "Email required") likely from the Add User form
-        if (props.errors && Object.keys(props.errors).length > 0) return 'users';
-        return 'threats';
+        if (hasFormErrors) return 'users';
+        return active_view;
     });
 
+    useEffect(() => {
+        if (hasFormErrors) {
+            setActiveTab('users');
+        } else {
+            setActiveTab(active_view);
+        }
+    }, [active_view, hasFormErrors]);
+
     // Modals
-    const [selectedThreat, setSelectedThreat] = useState(null);
-    const [showThreatModal, setShowThreatModal] = useState(false);
     const [showUserModal, setShowUserModal] = useState(false);
 
     const [showEditUserModal, setShowEditUserModal] = useState(false);
@@ -119,7 +129,7 @@ export default function AdminDashboard({
         error: null,
     });
 
-    // Form: Add User
+    // Form: Add Platform Staff
     const { data, setData, post, processing, reset, errors } = useForm({
         name: '', email: '',
     });
@@ -127,11 +137,6 @@ export default function AdminDashboard({
     const editForm = useForm({
         id: '', name: '', email: '', role: '', password: ''
     });
-
-    const openThreatModal = (threat) => {
-        setSelectedThreat(threat);
-        setShowThreatModal(true);
-    };
 
     const submitUser = (e) => {
         e.preventDefault();
@@ -171,7 +176,7 @@ export default function AdminDashboard({
     // 👇 Handle Report Generation
     const submitReport = (e) => {
         e.preventDefault();
-        reportForm.get(route('admin.dashboard'), {
+        reportForm.get(route('platform.dashboard', { tab: 'reports' }), {
             onSuccess: () => setActiveTab('reports'), // Ensure we stay on reports tab
             preserveState: true, // Keep the active tab
             preserveScroll: true,
@@ -291,90 +296,28 @@ export default function AdminDashboard({
     return (
         <AuthenticatedLayout
             user={auth.user}
-            header={<h2 className="font-semibold text-xl text-gray-800 leading-tight">Admin Console</h2>}
+            header={<h2 className="font-semibold text-xl text-gray-800 leading-tight">Security Operations</h2>}
         >
-            <Head title="Admin Dashboard" />
+            <Head title="Platform Security Console" />
 
-            <div className="flex min-h-screen w-full bg-gray-100">
-
-                {/* --- SIDEBAR --- */}
-                <aside className="w-1/5 bg-white border-r border-gray-200 min-h-screen">
-                    <div className="p-6">
-                        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4">Menu</h3>
-                        <nav className="space-y-2">
-                            <button
-                                onClick={() => setActiveTab('threats')}
-                                className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-md transition-colors ${activeTab === 'threats' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
-                            >
-                                <LayoutDashboard className="w-5 h-5 mr-3" /> Threat Overview
-                            </button>
-
-                            <button
-                                onClick={() => setActiveTab('users')}
-                                className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-md transition-colors ${activeTab === 'users' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
-                            >
-                                <Users className="w-5 h-5 mr-3" /> User Management
-                            </button>
-
-                            <Link
-                                href={route('admin.blocked-ips.index')}
-                                className="flex w-full items-center rounded-md px-4 py-3 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50"
-                            >
-                                <ShieldAlert className="mr-3 h-5 w-5" /> Blocked IPs
-                            </Link>
-
-                            {/* 👇 NEW REPORTS TAB */}
-                            <button
-                                onClick={() => setActiveTab('reports')}
-                                className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-md transition-colors ${activeTab === 'reports' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
-                            >
-                                <FileText className="w-5 h-5 mr-3" /> Reports & Analytics
-                            </button>
-
-                            <button
-                                onClick={() => setActiveTab('domains')}
-                                className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-md transition-colors ${activeTab === 'domains' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
-                            >
-                                <ShieldCheck className="w-5 h-5 mr-3" /> Whitelist Manager
-                            </button>
-
-                            <button
-                                onClick={() => setActiveTab('system')}
-                                className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-md transition-colors ${activeTab === 'system' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
-                            >
-                                <Server className="w-5 h-5 mr-3" /> System Health
-                            </button>
-
-                            <button
-                                onClick={() => setActiveTab('intelligence')}
-                                className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-md transition-colors ${activeTab === 'intelligence' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
-                            >
-                                <Globe2 className="w-5 h-5 mr-3" /> Global Intelligence
-                            </button>
-
-                            <button
-                                onClick={() => setActiveTab('tier3')}
-                                className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-md transition-colors ${activeTab === 'tier3' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
-                            >
-                                <KeyRound className="w-5 h-5 mr-3" /> Tier 3 Tokens
-                            </button>
-
-                            <button
-                                onClick={() => setActiveTab('audit')}
-                                className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-md transition-colors ${activeTab === 'audit' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
-                            >
-                                <History className="w-5 h-5 mr-3" /> Audit Trail
-                            </button>
-                        </nav>
-                    </div>
-                </aside>
-
-                {/* --- MAIN CONTENT --- */}
-                <main className="w-4/5 p-8">
+            <div className="min-h-screen w-full bg-gray-100">
+                <main className="p-4 sm:p-6 xl:p-8">
                     {flash?.success && (
                         <div className="mb-6 flex items-center rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800 shadow-sm">
                             <CheckCircle className="mr-2 h-5 w-5 shrink-0" />
                             <span>{flash.success}</span>
+                        </div>
+                    )}
+
+                    {flash?.account_setup_url && (
+                        <div className="mb-6 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-800">
+                            <p className="font-semibold">Local account-setup link</p>
+                            <p className="mt-1 text-xs text-indigo-700">
+                                Visible only in local/testing environments; expires after 60 minutes.
+                            </p>
+                            <a href={flash.account_setup_url} className="mt-2 block break-all font-medium underline">
+                                {flash.account_setup_url}
+                            </a>
                         </div>
                     )}
 
@@ -385,92 +328,28 @@ export default function AdminDashboard({
                         </div>
                     )}
 
-                    {/* VIEW 1: THREATS */}
-                    {/* VIEW 1: THREATS TABLE */}
-                    {activeTab === 'threats' && (
-                        <div className="space-y-6">
-                            <div className="flex justify-between items-center">
-                                <h3 className="text-2xl font-bold text-gray-800">
-                                    <ShieldAlert className="inline-block w-8 h-8 mr-2 text-red-600" />
-                                    Active Threat Alerts
-                                </h3>
-                            </div>
+                    {activeTab === 'overview' && (
+                        <SecurityOverviewPanel overview={security_overview} />
+                    )}
 
-                            <div className="bg-white rounded-lg shadow overflow-hidden border border-gray-200">
-                                <table className="min-w-full divide-y divide-gray-200">
-                                    <thead className="bg-gray-50">
-                                        <tr>
-                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Severity</th>
-                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Subject</th>
-                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
-                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Detected</th>
-                                            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="bg-white divide-y divide-gray-200">
-                                        {threats.length > 0 ? (
-                                            threats.map((threat) => (
-                                                <tr key={threat.id} className="hover:bg-gray-50 transition-colors">
-                                                    <td className="px-6 py-4 whitespace-nowrap">
-                                                        <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full
-                                                            ${threat.severity === 'high' ? 'bg-red-100 text-red-800' :
-                                                              threat.severity === 'medium' ? 'bg-yellow-100 text-yellow-800' :
-                                                              'bg-blue-100 text-blue-800'}`}>
-                                                            {threat.severity ? threat.severity.toUpperCase() : 'UNKNOWN'}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-6 py-4">
-                                                        <div className="text-sm font-medium text-gray-900 truncate max-w-xs" title={threat.subject}>
-                                                            {threat.subject || 'No Subject'}
-                                                        </div>
-                                                        <div className="text-xs text-gray-500 truncate max-w-xs">
-                                                            {threat.sender}
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                                        {threat.user ? threat.user.name : 'Unknown User'}
-                                                    </td>
-                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                                        {new Date(threat.created_at).toLocaleDateString()}
-                                                    </td>
-                                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                                        <button
-                                                            onClick={() => openThreatModal(threat)}
-                                                            className="text-indigo-600 hover:text-indigo-900 bg-indigo-50 px-3 py-1 rounded-md transition-colors"
-                                                        >
-                                                            View Analysis
-                                                        </button>
-                                                    </td>
-                                                </tr>
-                                            ))
-                                        ) : (
-                                            <tr>
-                                                <td colSpan="5" className="px-6 py-10 text-center text-gray-500">
-                                                    <div className="flex flex-col items-center justify-center">
-                                                        <CheckCircle className="w-12 h-12 text-green-400 mb-2" />
-                                                        <p className="text-lg font-medium">No threats detected.</p>
-                                                        <p className="text-sm">Your company is currently safe.</p>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        )}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
+                    {activeTab === 'threats' && (
+                        <ThreatOverviewPanel
+                            events={security_threat_events}
+                            onInspectIp={openIpLookupModal}
+                        />
                     )}
 
                     {/* VIEW 2: USERS */}
                     {/* VIEW 2: USERS TABLE */}
-                    {activeTab === 'users' && (
+                    {canManagePlatformUsers && activeTab === 'users' && (
                         <div className="space-y-6">
                             <div className="flex justify-between items-center">
                                 <h3 className="text-2xl font-bold text-gray-800">
                                     <Users className="inline-block w-8 h-8 mr-2 text-blue-600" />
-                                    Company Members
+                                    Platform Team
                                 </h3>
                                 <PrimaryButton onClick={() => setShowUserModal(true)}>
-                                    <UserPlus className="w-4 h-4 mr-2" /> Add New User
+                                    <UserPlus className="w-4 h-4 mr-2" /> Add Platform Staff
                                 </PrimaryButton>
                             </div>
 
@@ -529,7 +408,7 @@ export default function AdminDashboard({
                                         ) : (
                                             <tr>
                                                 <td colSpan="5" className="px-6 py-10 text-center text-gray-500">
-                                                    No users found in this company.
+                                                    No platform team members found.
                                                 </td>
                                             </tr>
                                         )}
@@ -1112,18 +991,11 @@ export default function AdminDashboard({
                 </main>
             </div>
 
-            {/* Modals (Keep existing modals here) */}
-            <ThreatDetailModal
-                show={showThreatModal}
-                onClose={() => setShowThreatModal(false)}
-                email={selectedThreat}
-            />
-
             <IpIntelligenceModal state={ipLookupModal} onClose={closeIpLookupModal} />
 
-            <Modal show={showUserModal} onClose={() => setShowUserModal(false)} maxWidth="md">
+            <Modal show={canManagePlatformUsers && showUserModal} onClose={() => setShowUserModal(false)} maxWidth="md">
                 <div className="p-6">
-                    <h2 className="text-lg font-medium text-gray-900">Add New User</h2>
+                    <h2 className="text-lg font-medium text-gray-900">Add Platform Staff</h2>
 
                     <form onSubmit={submitUser} className="mt-4">
                         {/* Name Field */}
@@ -1163,15 +1035,15 @@ export default function AdminDashboard({
                                 Cancel
                             </SecondaryButton>
                             <PrimaryButton disabled={processing}>
-                                Create User
+                                Create Platform Staff
                             </PrimaryButton>
                         </div>
                     </form>
                 </div>
             </Modal>
-            <Modal show={showEditUserModal} onClose={() => setShowEditUserModal(false)} maxWidth="md">
+            <Modal show={canManagePlatformUsers && showEditUserModal} onClose={() => setShowEditUserModal(false)} maxWidth="md">
                 <div className="p-6">
-                    <h2 className="text-lg font-medium text-gray-900">Edit User: {editingUser?.name}</h2>
+                    <h2 className="text-lg font-medium text-gray-900">Edit Platform Team Member: {editingUser?.name}</h2>
 
                     <form onSubmit={submitEditUser} className="mt-4">
                         {/* Name */}
