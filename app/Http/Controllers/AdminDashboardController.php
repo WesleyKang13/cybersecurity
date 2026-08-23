@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Models\WhitelistedDomain;
 use App\Services\AccountSetupService;
 use App\Services\IpIntelligenceService;
+use App\Support\ThreatMetadata;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -233,6 +234,10 @@ class AdminDashboardController extends Controller
                     'attacker_ip' => $event->attacker_ip,
                     'country' => $event->country,
                     'path_targeted' => $event->path_targeted,
+                    'event_type' => $event->event_type,
+                    'severity' => $event->severity,
+                    'reason' => $event->reason,
+                    'metadata' => ThreatMetadata::sanitized($event->metadata),
                     'action_taken' => $event->action_taken,
                     'user_agent' => $event->user_agent,
                     'monitored_domain' => $event->monitoredDomain ? [

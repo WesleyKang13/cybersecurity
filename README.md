@@ -1,6 +1,6 @@
 # Security & DNS Manager Engineering Handbook
 
-Internal handbook generated from the current codebase state on **August 15, 2026**.
+Internal handbook updated from the current codebase state on **August 22, 2026**.
 
 Scope analyzed:
 
@@ -103,6 +103,134 @@ The runtime shell is defined by two files:
 6. `Api\BlockedIpController@index` returns a combined list of:
    - global bans (`is_global = true`)
    - domain-specific bans for that domain
+
+#### Tier 3 protected-application integration guide
+
+The in-app **Tier 3 Integration Guide** is the canonical copy/paste setup guide. Open DNS Security, select an Application Middleware (Tier 3) domain, choose **View Integration**, and then **Open Tier 3 Integration Guide**. Its generated examples include that domain's current bearer token.
+
+Setup sequence:
+
+1. Create or select an active `app_middleware` monitored domain and securely copy its application-secret token.
+2. Add `SECURITY_MANAGER_URL`, `SECURITY_MANAGER_TOKEN`, and `SECURITY_MANAGER_DOMAIN` to the protected application's environment. Never commit the token.
+3. Add the guide's `SecurityTelemetryClient`; it posts events and polls the central block list with the bearer token.
+4. Add and register `SecurityTelemetryMiddleware` in the protected application's web middleware pipeline.
+5. Optionally add the `Illuminate\Auth\Events\Failed` listener when the protected application has authentication.
+6. Run the safe development test below, then confirm the enriched row in the central Threat Overview.
+
+The sample middleware polls `GET /api/v1/telemetry/blocked-ips`, caches the returned list for five minutes, and rejects a matching client IP locally with HTTP 403. The API returns global blocks plus blocks scoped to the authenticated domain. Consequently, a newly added block can take up to the client's cache TTL to become visible. This polling and enforcement behavior has not changed.
+
+The existing three-argument client call remains valid:
+
+```php
+$telemetryClient->reportThreat(
+    $request->ip(),
+    '/admin',
+    (string) $request->userAgent(),
+);
+```
+
+The client adds `timestamp` automatically and posts the established payload envelope:
+
+```json
+{
+  "threats": [
+    {
+      "attacker_ip": "192.0.2.10",
+      "targeted_path": "/admin",
+      "user_agent": "Example Client/1.0",
+      "timestamp": "2026-08-22T12:00:00+00:00"
+    }
+  ]
+}
+```
+
+`event_type`, `severity`, `reason`, and `metadata` are optional additions. Existing integrations using the original three method arguments and base payload continue to work without changes. Historical records remain nullable and are shown as **Generic Threat / Unclassified**; no classification is invented for them.
+
+```php
+$telemetryClient->reportThreat(
+    attackerIp: $request->ip(),
+    targetedPath: '/login',
+    userAgent: (string) $request->userAgent(),
+    eventType: 'failed_login',
+    severity: 'medium',
+    reason: 'Authentication failed',
+    metadata: ['route_name' => 'login'],
+);
+```
+
+Field semantics are deliberately separate:
+
+| Field | Meaning | Example |
+| --- | --- | --- |
+| `event_type` | **WHAT** happened | `failed_login` |
+| `severity` | **HOW serious** the reported event is | `medium` |
+| `reason` | **WHY** the application reported it | `Invalid credentials` |
+| `action_taken` | **WHAT the central system did** | `log` |
+
+Protected applications do not set `action_taken` through this API. Tier 3 ingestion continues to store `action_taken = log`; descriptive severity does not alter blocking or auto-ban decisions.
+
+Allowed severities are `info`, `low`, `medium`, `high`, and `critical`. Suggested classifications are conservative:
+
+| Signal | `event_type` | Suggested severity | Reason example |
+| --- | --- | --- | --- |
+| `.env` request | `environment_file_probe` | `high` | Attempt to access environment configuration file |
+| `wp-admin` request | `wordpress_admin_probe` | `medium` | Probe for WordPress administrative endpoint |
+| `phpMyAdmin` request | `phpmyadmin_probe` | `medium` | Probe for phpMyAdmin endpoint |
+| Failed authentication | `failed_login` | `medium` | Authentication failed |
+| Repeated failures already classified by the protected app | `brute_force` | `high` | Repeated login failures |
+| Other suspicious request | `suspicious_request` | `low` or `medium` | Matched application security rule |
+| Local development check | `test_probe` | `low` | Tier 3 telemetry development test |
+
+The manager does not infer `brute_force` from severity or introduce a new blocking policy. A protected app may report that type only when its own established detection has made that classification.
+
+For Laravel applications with authentication, the optional listener can consume `Illuminate\Auth\Events\Failed`:
+
+```php
+public function handle(\Illuminate\Auth\Events\Failed $event): void
+{
+    $request = request();
+
+    rescue(fn () => $this->telemetryClient->reportThreat(
+        attackerIp: (string) $request->ip(),
+        targetedPath: '/login',
+        userAgent: (string) $request->userAgent(),
+        eventType: 'failed_login',
+        severity: 'medium',
+        reason: 'Authentication failed',
+    ), report: false);
+
+    // Never read or transmit $event->credentials; it can contain the password.
+}
+```
+
+Applications without authentication do not need this listener. Laravel 12 discovers listeners placed under `app/Listeners` by default; applications with discovery disabled must register the listener through their normal event provider.
+
+Metadata is only for small, sanitized security context such as `matched_pattern`, `http_method`, `route_name`, `status_code`, or `attempt_count`. Never send passwords or attempted passwords, Authorization headers, cookies, session IDs, OAuth tokens, API tokens/secrets, payment-card details, private keys, complete request bodies, or `.env` contents. Sensitive key names are rejected, and request input is never copied automatically into metadata.
+
+Ingestion limits the full JSON request to 512 KB and each request to 100 events. `event_type` is lowercase snake_case up to 100 characters, `reason` is at most 2,000 characters, and metadata is a JSON object/array limited to 16 KB encoded, six levels of nesting, and 100 values. Existing path and user-agent limits remain 2,048 and 10,000 characters. Invalid inputs return HTTP 422.
+
+Safe development test (use only a development/staging manager and token):
+
+```bash
+TEST_TIMESTAMP="$(date -Iseconds)"
+
+curl --request POST 'https://your-security-manager-domain.com/api/v1/telemetry/threats' \
+  --header 'Accept: application/json' \
+  --header 'Content-Type: application/json' \
+  --header 'Authorization: Bearer YOUR_APP_SECRET_TOKEN' \
+  --data "{\"threats\":[{\"attacker_ip\":\"192.0.2.10\",\"targeted_path\":\"/test-middleware\",\"user_agent\":\"Tier3-Development-Test/1.0\",\"timestamp\":\"${TEST_TIMESTAMP}\",\"event_type\":\"test_probe\",\"severity\":\"low\",\"reason\":\"Tier 3 telemetry development test\",\"metadata\":{\"test_run\":true}}]}"
+```
+
+Threat Overview should show **Test Probe**, **Low**, source IP `192.0.2.10`, target `/test-middleware`, the development-test reason, and **Action Taken: LOG**. The sample middleware also recognizes `/test-middleware` only under `APP_ENV=local`; do not add or expose a dedicated production test endpoint.
+
+Troubleshooting:
+
+- HTTP 401: verify the bearer token is present, matches the selected monitored domain, and that the domain is active.
+- Endpoint unreachable: verify `SECURITY_MANAGER_URL`, TLS/DNS reachability, and outbound access from the protected app.
+- Blocked IP not enforced immediately: allow for the sample client's five-minute block-list cache.
+- Event shown as Unclassified: the sender used the backward-compatible legacy payload without enrichment.
+- HTTP 422 for severity: use only the five canonical lowercase values.
+- HTTP 422 for metadata or other fields: check the documented size/depth/count limits and remove prohibited sensitive keys.
 
 #### Important enforcement note
 
@@ -358,7 +486,7 @@ Private helper:
 
 | Method | Exact logic | Database interaction |
 | --- | --- | --- |
-| `storeThreats(Request $request, AppThreatService $service)` | Resolves the bearer-token-authenticated domain, validates the posted threat event array, hands the events to `AppThreatService`, and returns a `202 Accepted` JSON summary. | Upserts `security_threat_logs`; may insert `blocked_ips` through the service. |
+| `storeThreats(Request $request, AppThreatService $service)` | Resolves the bearer-token-authenticated domain; validates 1–100 posted events and their required base fields plus optional `event_type`, canonical `severity`, `reason`, and bounded sanitized `metadata`; hands the events to `AppThreatService`; and returns a `202 Accepted` JSON summary. | Upserts `security_threat_logs`; may insert `blocked_ips` through the unchanged service policy. |
 
 Private helpers:
 
@@ -627,7 +755,7 @@ Even though it lives outside `app/Console`, this job is part of the scheduled ex
 | Method | Behavior |
 | --- | --- |
 | `__construct(SecurityAlertDispatcher)` | Injects the alert dispatcher. |
-| `ingestThreatEvents(MonitoredDomain $domain, array $events)` | Iterates validated Tier 3 events, upserts each event into `security_threat_logs` with `action_taken = 'log'` and `threat_source = 'app_middleware'`, counts synced vs newly-created events, and calls `handleAutoBan()` for each attacker IP. |
+| `ingestThreatEvents(MonitoredDomain $domain, array $events)` | Iterates validated Tier 3 events, additively persists any supplied threat-detail fields, upserts each event with `action_taken = 'log'` and `threat_source = 'app_middleware'`, preserves existing enrichment when a legacy retry omits it, counts synced vs newly-created events, and calls the unchanged `handleAutoBan()` for each attacker IP. |
 | `handleAutoBan(MonitoredDomain $domain, string $attackerIp)` | Maintains a 60-second cache counter per IP/domain, compares it with `auto_ban_threshold` (minimum 1), refuses to duplicate an existing blocked IP, writes a global `blocked_ips` row with reason `Auto-banned: exceeded threat threshold`, and dispatches an `auto_ban` alert. |
 
 #### `CloudflareIpBlockService`
@@ -816,7 +944,7 @@ Caching used:
 | `monitored_domains` | Central registry for domains managed by Tier 1/2/3 | `domain`, `infrastructure_type`, `is_active`, `is_owned`, `cloudflare_zone_id`, `app_secret_token`, `auto_ban_threshold`, `last_checked_at`, `ssl_certificate_info` |
 | `dns_security_logs` | Point-in-time DNS posture findings | `monitored_domain_id`, `record_type`, `expected_value`, `current_value`, `severity`, `status`, `resolved_at` |
 | `web_security_scans` | Point-in-time HTTP/SSL/header audit results | `monitored_domain_id`, `http_status`, `response_time_ms`, `ssl_valid`, `ssl_expires_at`, `ssl_issuer`, `missing_headers`, `security_score`, `detected_issues` |
-| `security_threat_logs` | Threat telemetry across Cloudflare and middleware | `monitored_domain_id`, `attacker_ip`, `country`, `path_targeted`, `user_agent`, `action_taken`, `threat_source`, `detected_at` |
+| `security_threat_logs` | Threat telemetry across Cloudflare and middleware | `monitored_domain_id`, `attacker_ip`, `country`, `path_targeted`, `user_agent`, `event_type`, `severity`, `reason`, `metadata`, `action_taken`, `threat_source`, `detected_at` |
 | `blocked_ips` | Canonical banned-IP registry | `monitored_domain_id`, `ip`, `is_global`, `reason` |
 | `system_audit_logs` | Administrative action history | `user_id`, `action`, `target_type`, `target_id`, `metadata` |
 | `whitelisted_domains` | Trusted sender-domain whitelist for email scanning | `domain`, `description`, `is_active` |
@@ -877,6 +1005,10 @@ Caching used:
 | `country` | Geolocation country when available |
 | `path_targeted` | Requested path/route targeted by the attack |
 | `user_agent` | Added later to preserve request fingerprinting |
+| `event_type` | Nullable machine-readable description of what happened |
+| `severity` | Nullable descriptive severity: `info`, `low`, `medium`, `high`, or `critical` |
+| `reason` | Nullable human-readable explanation of why the event was reported |
+| `metadata` | Nullable JSON containing bounded, sanitized security context |
 | `action_taken` | Cloudflare action such as `block`, `challenge`, or middleware `log` |
 | `threat_source` | Source such as Cloudflare event source or `app_middleware` |
 | `detected_at` | Event timestamp used in uniqueness and analytics |
@@ -935,6 +1067,7 @@ Caching used:
 | `2026_08_08_221500_create_web_security_scans_table` | Creates web/SSL scan table. |
 | `2026_08_08_231100_create_security_threat_logs_table` | Creates unified threat telemetry table with uniqueness constraint. |
 | `2026_08_10_120100_add_user_agent_to_security_threat_logs_table` | Adds request `user_agent` capture. |
+| `2026_08_22_120000_add_threat_details_to_security_threat_logs_table` | Additively adds nullable `event_type`, `severity`, `reason`, and JSON `metadata`. |
 | `2026_08_11_120000_create_system_audit_logs_table` | Creates admin audit trail table. |
 | `2026_08_15_120100_create_blocked_ips_table` | Creates canonical blocked-IP registry. |
 
@@ -1029,4 +1162,3 @@ These are not speculative redesign ideas; they are implementation realities visi
 | Link normalization and redirect tracing | `LinkExtractionService` |
 | URL reputation | `VirusTotalService` |
 | Admin audit trail | `SystemAuditLog` + admin controllers |
-

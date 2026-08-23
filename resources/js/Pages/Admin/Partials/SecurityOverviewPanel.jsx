@@ -19,6 +19,12 @@ const formatDate = (value) => value
     }).format(new Date(value))
     : 'Unknown';
 
+const formatEventType = (value) => String(value || '')
+    .split('_')
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ') || 'Generic Threat';
+
 export default function SecurityOverviewPanel({ overview = {} }) {
     const primaryMetrics = [
         {
@@ -107,13 +113,14 @@ export default function SecurityOverviewPanel({ overview = {} }) {
                                 <div key={event.id} className="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
                                     <div className="min-w-0">
                                         <p className="truncate text-sm font-semibold text-gray-900">
-                                            {event.action_taken || 'Threat event'}
+                                            {formatEventType(event.event_type)}
                                             <span className="font-normal text-gray-500"> from </span>
                                             <span className="font-mono text-xs">{event.attacker_ip}</span>
                                         </p>
                                         <p className="mt-1 truncate text-xs text-gray-500">
                                             {event.monitored_domain?.domain || 'Unknown target'}
                                             {event.path_targeted ? ` · ${event.path_targeted}` : ''}
+                                            {` · Action: ${event.action_taken || 'Recorded'}`}
                                         </p>
                                     </div>
                                     <span className="shrink-0 text-xs text-gray-500">{formatDate(event.detected_at)}</span>

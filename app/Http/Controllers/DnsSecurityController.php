@@ -11,6 +11,7 @@ use App\Services\CloudflareIpBlockService;
 use App\Services\DnsScannerService;
 use App\Services\IpIntelligenceService;
 use App\Services\UniversalSecurityScannerService;
+use App\Support\ThreatMetadata;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -76,6 +77,9 @@ class DnsSecurityController extends Controller
                             'attacker_ip' => $log->attacker_ip,
                             'country' => $log->country,
                             'path_targeted' => $log->path_targeted,
+                            'event_type' => $log->event_type,
+                            'severity' => $log->severity,
+                            'reason' => $log->reason,
                             'action_taken' => $log->action_taken,
                             'threat_source' => $log->threat_source,
                             'detected_at' => $log->detected_at?->toIso8601String(),
@@ -158,8 +162,13 @@ class DnsSecurityController extends Controller
                     'attacker_ip' => $log->attacker_ip,
                     'country' => $log->country,
                     'path_targeted' => $log->path_targeted,
+                    'event_type' => $log->event_type,
+                    'severity' => $log->severity,
+                    'reason' => $log->reason,
+                    'metadata' => ThreatMetadata::sanitized($log->metadata),
                     'action_taken' => $log->action_taken,
                     'threat_source' => $log->threat_source,
+                    'user_agent' => $log->user_agent,
                     'detected_at' => $log->detected_at?->toIso8601String(),
                     'detected_at_formatted' => $log->detected_at?->format('Y-m-d H:i:s T'),
                     'detected_at_relative' => $log->detected_at?->diffForHumans() ?? 'Unknown',

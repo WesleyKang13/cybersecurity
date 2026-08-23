@@ -21,6 +21,10 @@ class SecurityThreatLog extends Model
         'country',
         'path_targeted',
         'user_agent',
+        'event_type',
+        'severity',
+        'reason',
+        'metadata',
         'action_taken',
         'threat_source',
         'detected_at',
@@ -33,6 +37,7 @@ class SecurityThreatLog extends Model
     {
         return [
             'detected_at' => 'datetime',
+            'metadata' => 'array',
         ];
     }
 

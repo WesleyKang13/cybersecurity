@@ -16,15 +16,18 @@ class AppThreatService
 
     public function __construct(
         private readonly SecurityAlertDispatcher $securityAlertDispatcher
-    ) {
-    }
+    ) {}
 
     /**
      * @param list<array{
      *     attacker_ip: string,
      *     targeted_path: string,
      *     user_agent: string,
-     *     timestamp: string
+     *     timestamp: string,
+     *     event_type?: string|null,
+     *     severity?: string|null,
+     *     reason?: string|null,
+     *     metadata?: array<array-key, mixed>|null
      * }> $events
      * @return array{events_synced: int, new_events_count: int}
      */
@@ -38,6 +41,21 @@ class AppThreatService
             $detectedAt = CarbonImmutable::parse($event['timestamp'])->toDateTimeString();
             $pathTargeted = trim($event['targeted_path']);
 
+            $attributes = [
+                'country' => null,
+                'user_agent' => trim($event['user_agent']) !== '' ? trim($event['user_agent']) : null,
+                'action_taken' => 'log',
+                'threat_source' => 'app_middleware',
+            ];
+
+            foreach (['event_type', 'severity', 'reason', 'metadata'] as $optionalField) {
+                if (array_key_exists($optionalField, $event) && $event[$optionalField] !== null) {
+                    $attributes[$optionalField] = is_string($event[$optionalField])
+                        ? trim($event[$optionalField])
+                        : $event[$optionalField];
+                }
+            }
+
             $threatLog = $domain->securityThreatLogs()->updateOrCreate(
                 [
                     'monitored_domain_id' => $domain->id,
@@ -45,12 +63,7 @@ class AppThreatService
                     'path_targeted' => $pathTargeted !== '' ? $pathTargeted : null,
                     'detected_at' => $detectedAt,
                 ],
-                [
-                    'country' => null,
-                    'user_agent' => trim($event['user_agent']) !== '' ? trim($event['user_agent']) : null,
-                    'action_taken' => 'log',
-                    'threat_source' => 'app_middleware',
-                ]
+                $attributes
             );
 
             $synced++;
@@ -72,7 +85,7 @@ class AppThreatService
     {
         $cacheKey = "threat_count_{$attackerIp}_{$domain->id}";
 
-        if (!Cache::has($cacheKey)) {
+        if (! Cache::has($cacheKey)) {
             Cache::put($cacheKey, 0, now()->addSeconds(self::THREAT_COUNT_WINDOW_SECONDS));
         }
 
