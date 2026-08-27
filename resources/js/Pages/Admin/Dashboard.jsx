@@ -12,11 +12,12 @@ import { formatUserRole, USER_ROLES } from '@/constants/roles';
 import {
     Mail, MessageSquare, Users, UserPlus,
     Calendar, TrendingUp, CheckCircle, Smartphone,
-    Server, RefreshCw, AlertTriangle, Globe2, Download, KeyRound, Eye, EyeOff, History
+    Server, RefreshCw, AlertTriangle, KeyRound, Eye, EyeOff, History
 } from 'lucide-react';
 import DomainManagerTab from './DomainManager';
 import SecurityOverviewPanel from './Partials/SecurityOverviewPanel';
 import ThreatOverviewPanel from './Partials/ThreatOverviewPanel';
+import GlobalIntelligencePanel from './Partials/GlobalIntelligencePanel';
 
 const parseFailedJobPayload = (payload) => {
     if (!payload || typeof payload !== 'string') {
@@ -87,8 +88,7 @@ export default function AdminDashboard({
     pending_jobs_count = 0,
     failed_jobs_count = 0,
     recent_failed_jobs = [],
-    top_targeted_paths = [],
-    top_attacker_ips = [],
+    top_attackers = [],
     tier_3_domains = [],
     audit_logs = [],
 }) {
@@ -559,118 +559,7 @@ export default function AdminDashboard({
                         <DomainManagerTab domains={domains} />
                     )}
                     {activeTab === 'intelligence' && (
-                        <div className="space-y-6">
-                            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                                <div>
-                                    <h3 className="text-2xl font-bold text-gray-800">
-                                        <Globe2 className="inline-block w-8 h-8 mr-2 text-indigo-600" />
-                                        Global Intelligence
-                                    </h3>
-                                    <p className="mt-1 text-sm text-gray-500">
-                                        Cross-tenant threat telemetry aggregated from the shared security event stream.
-                                    </p>
-                                </div>
-
-                                <a
-                                    href={route('admin.threats.export')}
-                                    download
-                                    className="inline-flex items-center justify-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700"
-                                >
-                                    <Download className="mr-2 h-4 w-4" />
-                                    Export Global Threat Feed (JSON)
-                                </a>
-                            </div>
-
-                            <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-                                <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow">
-                                    <div className="border-b border-gray-100 bg-gray-50 px-6 py-4">
-                                        <h4 className="text-base font-semibold text-gray-900">Top Targeted Paths</h4>
-                                        <p className="mt-1 text-sm text-gray-500">
-                                            Most frequently probed routes across the global threat log.
-                                        </p>
-                                    </div>
-
-                                    <div className="overflow-x-auto">
-                                        <table className="min-w-full divide-y divide-gray-200">
-                                            <thead className="bg-gray-50">
-                                                <tr>
-                                                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Path</th>
-                                                    <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Hits</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-gray-200 bg-white">
-                                                {top_targeted_paths.length > 0 ? (
-                                                    top_targeted_paths.map((item, index) => (
-                                                        <tr key={`${item.path_targeted}-${index}`} className="hover:bg-gray-50 transition-colors">
-                                                            <td className="px-6 py-4 text-sm font-medium text-gray-900">
-                                                                <span className="rounded bg-gray-100 px-2 py-1 font-mono text-xs text-gray-700">
-                                                                    {item.path_targeted}
-                                                                </span>
-                                                            </td>
-                                                            <td className="px-6 py-4 text-right text-sm font-semibold text-gray-700">
-                                                                {item.count}
-                                                            </td>
-                                                        </tr>
-                                                    ))
-                                                ) : (
-                                                    <tr>
-                                                        <td colSpan="2" className="px-6 py-10 text-center text-sm text-gray-500">
-                                                            No targeted path data available yet.
-                                                        </td>
-                                                    </tr>
-                                                )}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-
-                                <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow">
-                                    <div className="border-b border-gray-100 bg-gray-50 px-6 py-4">
-                                        <h4 className="text-base font-semibold text-gray-900">Top Attacker IPs</h4>
-                                        <p className="mt-1 text-sm text-gray-500">
-                                            Highest-volume source IPs observed across recent shared telemetry.
-                                        </p>
-                                    </div>
-
-                                    <div className="overflow-x-auto">
-                                        <table className="min-w-full divide-y divide-gray-200">
-                                            <thead className="bg-gray-50">
-                                                <tr>
-                                                    <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Attacker IP</th>
-                                                    <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">Events</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-gray-200 bg-white">
-                                                {top_attacker_ips.length > 0 ? (
-                                                    top_attacker_ips.map((item, index) => (
-                                                        <tr key={`${item.attacker_ip}-${index}`} className="hover:bg-gray-50 transition-colors">
-                                                            <td className="px-6 py-4 text-sm font-medium text-gray-900">
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => openIpLookupModal(item.attacker_ip)}
-                                                                    className="rounded bg-red-50 px-2 py-1 font-mono text-xs text-blue-600 transition hover:underline"
-                                                                >
-                                                                    {item.attacker_ip}
-                                                                </button>
-                                                            </td>
-                                                            <td className="px-6 py-4 text-right text-sm font-semibold text-gray-700">
-                                                                {item.count}
-                                                            </td>
-                                                        </tr>
-                                                    ))
-                                                ) : (
-                                                    <tr>
-                                                        <td colSpan="2" className="px-6 py-10 text-center text-sm text-gray-500">
-                                                            No attacker IP data available yet.
-                                                        </td>
-                                                    </tr>
-                                                )}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
+                        <GlobalIntelligencePanel topAttackers={top_attackers} />
                     )}
                     {activeTab === 'tier3' && (
                         <div className="space-y-6">

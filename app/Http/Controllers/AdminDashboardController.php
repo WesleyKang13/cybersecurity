@@ -11,7 +11,7 @@ use App\Models\SystemAuditLog;
 use App\Models\User;
 use App\Models\WhitelistedDomain;
 use App\Services\AccountSetupService;
-use App\Services\IpIntelligenceService;
+use App\Services\AttackerIntelligenceService;
 use App\Support\ThreatMetadata;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -29,7 +29,7 @@ use Throwable;
 
 class AdminDashboardController extends Controller
 {
-    public function index(Request $request)
+    public function index(Request $request, AttackerIntelligenceService $attackerIntelligenceService)
     {
         $user = Auth::user();
 
@@ -160,44 +160,27 @@ class AdminDashboardController extends Controller
                 ->values()
                 ->all()
             : [];
-        $topTargetedPaths = SecurityThreatLog::query()
-            ->selectRaw('path_targeted, COUNT(*) as event_count')
-            ->whereNotNull('path_targeted')
-            ->where('path_targeted', '!=', '')
-            ->groupBy('path_targeted')
-            ->orderByDesc('event_count')
-            ->limit(5)
-            ->get()
-            ->map(function (SecurityThreatLog $log): array {
-                return [
-                    'path_targeted' => $log->path_targeted,
-                    'count' => (int) $log->event_count,
-                ];
-            })
-            ->values()
-            ->all();
-        $topAttackerIps = SecurityThreatLog::query()
-            ->selectRaw('attacker_ip, COUNT(*) as event_count')
-            ->whereNotNull('attacker_ip')
-            ->where('attacker_ip', '!=', '')
-            ->groupBy('attacker_ip')
-            ->orderByDesc('event_count')
-            ->limit(10)
-            ->get()
-            ->map(function (SecurityThreatLog $log): array {
-                return [
-                    'attacker_ip' => $log->attacker_ip,
-                    'count' => (int) $log->event_count,
-                ];
-            })
-            ->values()
-            ->all();
-        $tier3Domains = MonitoredDomain::query()
-            ->where('infrastructure_type', 'app_middleware')
-            ->withCount('securityThreatLogs')
-            ->orderBy('domain')
-            ->get()
-            ->makeVisible('app_secret_token');
+        $requestedView = (string) $request->query('tab', '');
+        $allowedViews = ['threats', 'reports', 'domains', 'system', 'intelligence', 'tier3', 'audit'];
+
+        if ($user->hasPlatformOwnerAccess()) {
+            $allowedViews[] = 'users';
+        }
+
+        $activeView = in_array($requestedView, $allowedViews, true)
+            ? $requestedView
+            : ($reportData !== null ? 'reports' : 'overview');
+        $topAttackers = $activeView === 'intelligence'
+            ? $attackerIntelligenceService->topAttackers()
+            : [];
+        $tier3Domains = $activeView === 'tier3'
+            ? MonitoredDomain::query()
+                ->where('infrastructure_type', 'app_middleware')
+                ->withCount('securityThreatLogs')
+                ->orderBy('domain')
+                ->get()
+                ->makeVisible('app_secret_token')
+            : [];
         $auditLogs = SystemAuditLog::query()
             ->with('user:id,name,email')
             ->latest()
@@ -224,7 +207,7 @@ class AdminDashboardController extends Controller
         $securityThreatEvents = SecurityThreatLog::query()
             ->with('monitoredDomain:id,domain,infrastructure_type')
             ->orderByDesc('detected_at')
-            ->limit(100)
+            ->limit($activeView === 'threats' ? 100 : 5)
             ->get()
             ->map(function (SecurityThreatLog $event): array {
                 return [
@@ -251,16 +234,6 @@ class AdminDashboardController extends Controller
         $emailThreatQuery = ScannedEmail::query()->where('is_threat', true);
         $monitoredDomainsTotal = MonitoredDomain::query()->count();
         $activeMonitoredDomains = MonitoredDomain::query()->where('is_active', true)->count();
-        $requestedView = (string) $request->query('tab', '');
-        $allowedViews = ['threats', 'reports', 'domains', 'system', 'intelligence', 'tier3', 'audit'];
-
-        if ($user->hasPlatformOwnerAccess()) {
-            $allowedViews[] = 'users';
-        }
-
-        $activeView = in_array($requestedView, $allowedViews, true)
-            ? $requestedView
-            : ($reportData !== null ? 'reports' : 'overview');
 
         return Inertia::render('Admin/Dashboard', [
             'active_view' => $activeView,
@@ -280,7 +253,9 @@ class AdminDashboardController extends Controller
                 'failed_jobs' => $failedJobsCount,
                 'recent_activity' => $securityThreatEvents->take(5)->values()->all(),
             ],
-            'security_threat_events' => $securityThreatEvents->all(),
+            'security_threat_events' => $activeView === 'threats'
+                ? $securityThreatEvents->all()
+                : [],
             'users' => $companyUsers,
             'reportData' => $reportData,
             'filters' => $request->only(['start_date', 'end_date']),
@@ -288,8 +263,7 @@ class AdminDashboardController extends Controller
             'pending_jobs_count' => $pendingJobsCount,
             'failed_jobs_count' => $failedJobsCount,
             'recent_failed_jobs' => $recentFailedJobs,
-            'top_targeted_paths' => $topTargetedPaths,
-            'top_attacker_ips' => $topAttackerIps,
+            'top_attackers' => $topAttackers,
             'tier_3_domains' => $tier3Domains,
             'audit_logs' => $auditLogs,
         ]);
@@ -310,8 +284,10 @@ class AdminDashboardController extends Controller
         );
     }
 
-    public function getIpIntelligence(string $ip, IpIntelligenceService $ipIntelligenceService): JsonResponse
-    {
+    public function getIpIntelligence(
+        string $ip,
+        AttackerIntelligenceService $attackerIntelligenceService
+    ): JsonResponse {
         if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
             return response()->json([
                 'success' => false,
@@ -320,7 +296,7 @@ class AdminDashboardController extends Controller
         }
 
         try {
-            $result = $ipIntelligenceService->lookup($ip);
+            $result = $attackerIntelligenceService->investigate($ip);
 
             if (($result['status'] ?? 'fail') !== 'success') {
                 return response()->json([
