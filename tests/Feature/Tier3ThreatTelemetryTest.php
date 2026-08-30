@@ -83,6 +83,37 @@ class Tier3ThreatTelemetryTest extends TestCase
         $this->assertSame('log', $log->action_taken);
     }
 
+    public function test_failed_login_safe_target_context_is_accepted_and_stored(): void
+    {
+        $domain = $this->createTier3Domain();
+        $metadata = [
+            'account_exists' => true,
+            'target_role' => 'platform_staff',
+            'attempted_identifier_masked' => 'w***@company.com',
+            'attempt_count' => 4,
+            'http_method' => 'POST',
+            'route_name' => 'login',
+        ];
+        $event = array_merge($this->legacyEvent(), [
+            'targeted_path' => '/login',
+            'event_type' => 'failed_login',
+            'severity' => 'high',
+            'reason' => 'Repeated authentication failures against a privileged account',
+            'metadata' => $metadata,
+        ]);
+
+        $this->withToken((string) $domain->app_secret_token)
+            ->postJson('/api/v1/telemetry/threats', ['threats' => [$event]])
+            ->assertAccepted();
+
+        $log = SecurityThreatLog::query()->sole();
+
+        $this->assertSame('failed_login', $log->event_type);
+        $this->assertSame('high', $log->severity);
+        $this->assertSame($metadata, $log->metadata);
+        $this->assertSame('log', $log->action_taken);
+    }
+
     public function test_legacy_retry_does_not_erase_existing_enrichment(): void
     {
         $domain = $this->createTier3Domain();
@@ -200,23 +231,27 @@ class Tier3ThreatTelemetryTest extends TestCase
     public function test_sensitive_metadata_keys_are_rejected_and_request_body_is_not_captured(): void
     {
         $domain = $this->createTier3Domain();
-        $event = array_merge($this->legacyEvent(), [
-            'metadata' => [
-                'request_body' => ['email' => 'person@example.test', 'password' => 'secret'],
-            ],
-        ]);
+        $event = $this->legacyEvent();
+        $unsafeMetadata = [
+            ['password' => 'must-not-be-stored'],
+            ['attempted_password' => 'must-not-be-stored'],
+            ['credentials' => ['email' => 'person@example.test', 'password' => 'must-not-be-stored']],
+            ['request_body' => ['email' => 'person@example.test']],
+            ['authorization_headers' => ['Bearer must-not-be-stored']],
+            ['oauth_token' => 'must-not-be-stored'],
+            ['api_secret' => 'must-not-be-stored'],
+            ['attempted_identifier' => 'person@example.test'],
+            ['attempted_identifier_masked' => 'person@example.test'],
+        ];
 
-        $this->withToken((string) $domain->app_secret_token)
-            ->postJson('/api/v1/telemetry/threats', ['threats' => [$event]])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors('threats.0.metadata');
+        foreach ($unsafeMetadata as $metadata) {
+            $event['metadata'] = $metadata;
 
-        $event['metadata'] = ['authorization_headers' => ['Bearer must-not-be-stored']];
-
-        $this->withToken((string) $domain->app_secret_token)
-            ->postJson('/api/v1/telemetry/threats', ['threats' => [$event]])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors('threats.0.metadata');
+            $this->withToken((string) $domain->app_secret_token)
+                ->postJson('/api/v1/telemetry/threats', ['threats' => [$event]])
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors('threats.0.metadata');
+        }
 
         unset($event['metadata']);
 

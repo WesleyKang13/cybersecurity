@@ -88,6 +88,64 @@ class PlatformDashboardViewsTest extends TestCase
                 ->where('security_threat_events.1.reason', null));
     }
 
+    public function test_threat_overview_supports_safe_and_legacy_failed_login_context(): void
+    {
+        $staff = $this->createPlatformUser(User::ROLE_PLATFORM_STAFF);
+        [$activeDomain] = $this->createMonitoredDomains();
+
+        $contextEvent = SecurityThreatLog::create([
+            'monitored_domain_id' => $activeDomain->id,
+            'attacker_ip' => '203.0.113.50',
+            'country' => 'Germany',
+            'path_targeted' => '/login',
+            'user_agent' => 'Example browser',
+            'event_type' => 'failed_login',
+            'severity' => 'high',
+            'reason' => 'Repeated authentication failures against a privileged account',
+            'metadata' => [
+                'account_exists' => true,
+                'target_role' => 'platform_staff',
+                'attempted_identifier_masked' => 'w***@company.com',
+                'attempt_count' => 4,
+                'http_method' => 'POST',
+                'route_name' => 'login',
+            ],
+            'action_taken' => 'log',
+            'threat_source' => 'app_middleware',
+            'detected_at' => now(),
+        ]);
+
+        $legacyEvent = SecurityThreatLog::create([
+            'monitored_domain_id' => $activeDomain->id,
+            'attacker_ip' => '203.0.113.51',
+            'path_targeted' => '/login',
+            'user_agent' => 'Legacy browser',
+            'event_type' => 'failed_login',
+            'severity' => 'medium',
+            'reason' => 'Authentication failed',
+            'metadata' => null,
+            'action_taken' => 'log',
+            'threat_source' => 'app_middleware',
+            'detected_at' => now()->subMinute(),
+        ]);
+
+        $this->actingAs($staff)
+            ->get(route('platform.dashboard', ['tab' => 'threats']))
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('security_threat_events.0.id', $contextEvent->id)
+                ->where('security_threat_events.0.event_type', 'failed_login')
+                ->where('security_threat_events.0.metadata.account_exists', true)
+                ->where('security_threat_events.0.metadata.target_role', 'platform_staff')
+                ->where('security_threat_events.0.metadata.attempted_identifier_masked', 'w***@company.com')
+                ->where('security_threat_events.0.metadata.attempt_count', 4)
+                ->where('security_threat_events.0.metadata.http_method', 'POST')
+                ->where('security_threat_events.0.metadata.route_name', 'login')
+                ->where('security_threat_events.1.id', $legacyEvent->id)
+                ->where('security_threat_events.1.event_type', 'failed_login')
+                ->where('security_threat_events.1.metadata', null));
+    }
+
     public function test_sidebar_links_select_distinct_dashboard_views(): void
     {
         $owner = $this->createPlatformUser(User::ROLE_PLATFORM_OWNER);

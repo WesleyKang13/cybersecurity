@@ -76,6 +76,16 @@ class SafeThreatMetadata implements ValidationRule
                 return false;
             }
 
+            if (
+                is_string($key)
+                && strtolower(trim($key)) === 'attempted_identifier_masked'
+                && ! ThreatMetadata::isSafeMaskedIdentifier($value)
+            ) {
+                $fail('The :attribute attempted identifier must be masked before transmission.');
+
+                return false;
+            }
+
             if (is_array($value) && ! $this->validateEntries($value, $depth + 1, $valueCount, $fail)) {
                 return false;
             }

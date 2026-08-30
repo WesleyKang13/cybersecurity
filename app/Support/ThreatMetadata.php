@@ -19,6 +19,10 @@ final class ThreatMetadata
         'api_key',
         'api_secret',
         'api_token',
+        'attempted_account',
+        'attempted_email',
+        'attempted_identifier',
+        'attempted_username',
         'authorization',
         'authorization_header',
         'card_number',
@@ -32,6 +36,8 @@ final class ThreatMetadata
         'env_contents',
         'headers',
         'http_headers',
+        'login_email',
+        'login_identifier',
         'oauth_token',
         'password',
         'password_confirmation',
@@ -48,7 +54,7 @@ final class ThreatMetadata
 
     public static function isProhibitedKey(string $key): bool
     {
-        $normalized = strtolower(trim((string) preg_replace('/[^a-zA-Z0-9]+/', '_', $key), '_'));
+        $normalized = self::normalizedKey($key);
 
         if (in_array($normalized, self::PROHIBITED_KEYS, true)) {
             return true;
@@ -76,6 +82,15 @@ final class ThreatMetadata
         return false;
     }
 
+    public static function isSafeMaskedIdentifier(mixed $value): bool
+    {
+        if (! is_string($value)) {
+            return false;
+        }
+
+        return preg_match('/^[^@\s*]\*{3}@[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i', trim($value)) === 1;
+    }
+
     /**
      * Redact sensitive values defensively before metadata reaches an operator UI.
      * New API submissions reject these keys, but older/imported rows may not.
@@ -96,11 +111,26 @@ final class ThreatMetadata
                 continue;
             }
 
+            if (
+                is_string($key)
+                && self::normalizedKey($key) === 'attempted_identifier_masked'
+                && ! self::isSafeMaskedIdentifier($value)
+            ) {
+                $metadata[$key] = '[redacted]';
+
+                continue;
+            }
+
             if (is_array($value)) {
                 $metadata[$key] = self::sanitized($value);
             }
         }
 
         return $metadata;
+    }
+
+    private static function normalizedKey(string $key): string
+    {
+        return strtolower(trim((string) preg_replace('/[^a-zA-Z0-9]+/', '_', $key), '_'));
     }
 }

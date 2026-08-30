@@ -251,9 +251,12 @@ namespace App\\Listeners;
 
 use App\\Services\\SecurityTelemetryClient;
 use Illuminate\\Auth\\Events\\Failed;
+use Illuminate\\Support\\Facades\\Cache;
 
 class ReportFailedLogin
 {
+    private const ATTEMPT_WINDOW_MINUTES = 10;
+
     public function __construct(
         private readonly SecurityTelemetryClient $telemetryClient
     ) {
@@ -263,18 +266,110 @@ class ReportFailedLogin
     {
         $request = request();
 
-        rescue(function () use ($request): void {
+        rescue(function () use ($event, $request): void {
+            // The Failed event has already asked the configured auth provider to
+            // resolve the account. Do not query the user table again here.
+            $accountExists = $event->user !== null;
+            $targetRole = $accountExists
+                ? $this->normalizeRole($event->user->role ?? null)
+                : null;
+
+            // Adapt "email" only if this application uses a different login field.
+            // Read that single field, mask it immediately, and never log the input.
+            $maskedIdentifier = $this->maskEmailIdentifier(
+                $accountExists
+                    ? ($event->user->email ?? null)
+                    : $request->input('email')
+            );
+
+            // This report-only cache counter is separate from Laravel's login
+            // limiter. It does not block, clear, or otherwise alter authentication.
+            $attemptCount = $this->failedLoginAttemptCount(
+                (string) $request->ip(),
+                $maskedIdentifier
+            );
+
+            $isPrivilegedTarget = $targetRole !== null
+                && preg_match('/(?:^|_)(?:owner|admin|staff)(?:_|$)/', $targetRole) === 1;
+            $isHighSeverity = $attemptCount !== null && (
+                ($isPrivilegedTarget && $attemptCount >= 3)
+                || $attemptCount >= 5
+            );
+
+            $reason = match (true) {
+                $isHighSeverity && $isPrivilegedTarget => 'Repeated authentication failures against a privileged account',
+                $isHighSeverity => 'Repeated authentication failures against an account',
+                ($attemptCount ?? 0) >= 2 => 'Repeated authentication failures',
+                default => 'Authentication failed',
+            };
+
+            $metadata = array_filter([
+                'account_exists' => $accountExists,
+                'target_role' => $targetRole,
+                'attempted_identifier_masked' => $maskedIdentifier,
+                'attempt_count' => $attemptCount,
+                'http_method' => $request->method(),
+                'route_name' => $request->route()?->getName(),
+            ], static fn (mixed $value): bool => $value !== null);
+
             $this->telemetryClient->reportThreat(
                 attackerIp: (string) $request->ip(),
-                targetedPath: '/login',
+                targetedPath: '/'.ltrim($request->path(), '/'),
                 userAgent: (string) $request->userAgent(),
                 eventType: 'failed_login',
-                severity: 'medium',
-                reason: 'Authentication failed',
+                severity: $isHighSeverity ? 'high' : 'medium',
+                reason: $reason,
+                metadata: $metadata,
             );
         }, report: false);
 
         // Never read or transmit $event->credentials: it can contain the password.
+    }
+
+    private function maskEmailIdentifier(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $email = filter_var(trim($value), FILTER_VALIDATE_EMAIL);
+
+        if (! is_string($email)) {
+            return null;
+        }
+
+        [$localPart, $domain] = explode('@', $email, 2);
+
+        if ($localPart === '' || $domain === '') {
+            return null;
+        }
+
+        return substr($localPart, 0, 1).'***@'.strtolower($domain);
+    }
+
+    private function normalizeRole(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $role = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($value)));
+        $role = is_string($role) ? trim($role, '_') : '';
+
+        return $role !== '' && strlen($role) <= 100 ? $role : null;
+    }
+
+    private function failedLoginAttemptCount(string $ip, ?string $maskedIdentifier): ?int
+    {
+        return rescue(function () use ($ip, $maskedIdentifier): int {
+            // Hash the dimensions so even the masked identifier is not in the key.
+            $fingerprint = hash('sha256', $ip.'|'.($maskedIdentifier ?? 'unknown'));
+            $key = 'security-telemetry:failed-login:'.$fingerprint;
+
+            Cache::add($key, 0, now()->addMinutes(self::ATTEMPT_WINDOW_MINUTES));
+
+            return (int) Cache::increment($key);
+        }, null, report: false);
     }
 }
 
@@ -330,7 +425,7 @@ curl --request POST 'https://your-security-manager-domain.com/api/v1/telemetry/t
             summary: 'Optionally listen for Laravel authentication failures and report sanitized context without credentials.',
             language: 'PHP / Laravel',
             code: snippets.failedLogin,
-            note: 'Applications without authentication do not need this listener. Never access or transmit the Failed event credentials array.',
+            note: 'Applications without authentication do not need this listener. Account existence comes from the user resolved by the Failed event; roles are optional and application-specific; identifiers are masked locally. The optional ten-minute cache counter is report-only and does not change login throttling. Never access or transmit the Failed event credentials array.',
         },
         {
             id: 'test',
@@ -430,6 +525,13 @@ $client->reportThreat(
     eventType: 'failed_login',
     severity: 'medium',
     reason: 'Authentication failed',
+    metadata: [
+        'account_exists' => false,
+        'attempted_identifier_masked' => 'w***@company.com',
+        'attempt_count' => 1,
+        'http_method' => 'POST',
+        'route_name' => 'login',
+    ],
 );`}</pre>
                     </section>
 
@@ -442,7 +544,8 @@ $client->reportThreat(
                                     <tr><td className="py-2 pr-4">.env probe</td><td className="py-2 pr-4 font-mono">environment_file_probe</td><td className="py-2">high</td></tr>
                                     <tr><td className="py-2 pr-4">wp-admin probe</td><td className="py-2 pr-4 font-mono">wordpress_admin_probe</td><td className="py-2">medium</td></tr>
                                     <tr><td className="py-2 pr-4">phpMyAdmin probe</td><td className="py-2 pr-4 font-mono">phpmyadmin_probe</td><td className="py-2">medium</td></tr>
-                                    <tr><td className="py-2 pr-4">Failed login</td><td className="py-2 pr-4 font-mono">failed_login</td><td className="py-2">medium</td></tr>
+                                    <tr><td className="py-2 pr-4">Isolated failed login</td><td className="py-2 pr-4 font-mono">failed_login</td><td className="py-2">medium</td></tr>
+                                    <tr><td className="py-2 pr-4">Repeated failed login against a privileged account</td><td className="py-2 pr-4 font-mono">failed_login</td><td className="py-2">high</td></tr>
                                     <tr><td className="py-2 pr-4">Repeated failures already identified by the app</td><td className="py-2 pr-4 font-mono">brute_force</td><td className="py-2">high</td></tr>
                                     <tr><td className="py-2 pr-4">Other suspicious request</td><td className="py-2 pr-4 font-mono">suspicious_request</td><td className="py-2">low or medium</td></tr>
                                     <tr><td className="py-2 pr-4">Local development check</td><td className="py-2 pr-4 font-mono">test_probe</td><td className="py-2">low</td></tr>
@@ -464,7 +567,7 @@ $client->reportThreat(
                     <section className="rounded-2xl border border-red-200 bg-red-50 p-4 dark:border-red-500/30 dark:bg-red-500/10">
                         <h3 className="text-sm font-semibold text-red-900 dark:text-red-100">Sanitized metadata only</h3>
                         <p className="mt-2 text-xs leading-5 text-red-800 dark:text-red-200">
-                            Metadata may contain small context such as a matched rule, HTTP method, status code, or attempt count. Never send passwords, Authorization headers, cookies, session IDs, OAuth/API tokens, API secrets, payment details, private keys, complete request bodies, or .env contents. Sensitive keys are rejected.
+                            Metadata may contain small derived context such as account existence, an optional normalized role, a locally masked identifier, HTTP method, route name, or attempt count. Never send passwords, raw identifiers, credential arrays, Authorization headers, cookies, session IDs, OAuth/API tokens, API secrets, payment details, private keys, complete request bodies, or .env contents. Sensitive keys and unmasked attempted identifiers are rejected.
                         </p>
                     </section>
 

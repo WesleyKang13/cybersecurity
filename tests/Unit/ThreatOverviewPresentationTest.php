@@ -47,4 +47,16 @@ class ThreatOverviewPresentationTest extends TestCase
         $this->assertStringContainsString('Sanitized Metadata', $this->component);
         $this->assertStringContainsString('JSON.stringify(metadata, null, 2)', $this->component);
     }
+
+    public function test_failed_login_target_context_is_presented_only_when_available(): void
+    {
+        foreach (['Account Target', 'Account exists', 'Role', 'Attempted account', 'Attempt count', 'Route:'] as $label) {
+            $this->assertStringContainsString($label, $this->component);
+        }
+
+        $this->assertStringContainsString("event?.event_type === 'failed_login'", $this->component);
+        $this->assertStringContainsString('selectedFailedLoginAccountContext.length > 0', $this->component);
+        $this->assertStringContainsString("typeof metadata.account_exists === 'boolean'", $this->component);
+        $this->assertStringContainsString('Number.isInteger(metadata.attempt_count)', $this->component);
+    }
 }

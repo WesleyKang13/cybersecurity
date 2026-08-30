@@ -47,6 +47,43 @@ const metadataText = (metadata) => {
     return JSON.stringify(metadata, null, 2);
 };
 
+const failedLoginMetadata = (event) => (
+    event?.event_type === 'failed_login'
+    && event.metadata
+    && typeof event.metadata === 'object'
+    && !Array.isArray(event.metadata)
+        ? event.metadata
+        : null
+);
+
+const failedLoginAccountContext = (event) => {
+    const metadata = failedLoginMetadata(event);
+
+    if (!metadata) {
+        return [];
+    }
+
+    const context = [];
+
+    if (typeof metadata.account_exists === 'boolean') {
+        context.push({ key: 'account-exists', label: 'Account exists', value: metadata.account_exists ? 'Yes' : 'No' });
+    }
+
+    if (typeof metadata.target_role === 'string' && metadata.target_role.trim()) {
+        context.push({ key: 'target-role', label: 'Role', value: formatLabel(metadata.target_role, 'Unknown') });
+    }
+
+    if (typeof metadata.attempted_identifier_masked === 'string' && metadata.attempted_identifier_masked.trim()) {
+        context.push({ key: 'attempted-account', label: 'Attempted account', value: metadata.attempted_identifier_masked });
+    }
+
+    if (Number.isInteger(metadata.attempt_count) && metadata.attempt_count >= 1) {
+        context.push({ key: 'attempt-count', label: 'Attempt count', value: String(metadata.attempt_count) });
+    }
+
+    return context;
+};
+
 function DetailItem({ label, children, className = '' }) {
     return (
         <div className={`rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 ${className}`}>
@@ -59,6 +96,8 @@ function DetailItem({ label, children, className = '' }) {
 export default function ThreatOverviewPanel({ events = [], onInspectIp }) {
     const [severityFilter, setSeverityFilter] = useState('all');
     const [selectedEvent, setSelectedEvent] = useState(null);
+    const selectedFailedLoginMetadata = failedLoginMetadata(selectedEvent);
+    const selectedFailedLoginAccountContext = failedLoginAccountContext(selectedEvent);
 
     const filteredEvents = useMemo(() => {
         if (severityFilter === 'all') {
@@ -216,10 +255,28 @@ export default function ThreatOverviewPanel({ events = [], onInspectIp }) {
                             </DetailItem>
                             <DetailItem label="Application / Domain">{selectedEvent.monitored_domain?.domain || 'Unknown application'}</DetailItem>
                             <DetailItem label="Targeted Path" className="sm:col-span-2">
-                                <span className="font-mono">{selectedEvent.path_targeted || 'No targeted path recorded'}</span>
+                                <span className="font-mono">
+                                    {typeof selectedFailedLoginMetadata?.http_method === 'string' ? `${selectedFailedLoginMetadata.http_method.toUpperCase()} ` : ''}
+                                    {selectedEvent.path_targeted || 'No targeted path recorded'}
+                                </span>
+                                {typeof selectedFailedLoginMetadata?.route_name === 'string' && selectedFailedLoginMetadata.route_name.trim() ? (
+                                    <span className="mt-1 block text-xs text-gray-500">Route: {selectedFailedLoginMetadata.route_name}</span>
+                                ) : null}
                             </DetailItem>
                             <DetailItem label="Detected At">{formatDate(selectedEvent.detected_at)}</DetailItem>
                             <DetailItem label="User Agent">{selectedEvent.user_agent || 'No user-agent detail recorded'}</DetailItem>
+                            {selectedFailedLoginAccountContext.length > 0 ? (
+                                <DetailItem label="Account Target" className="sm:col-span-2">
+                                    <dl className="mt-2 grid gap-3 sm:grid-cols-2">
+                                        {selectedFailedLoginAccountContext.map((item) => (
+                                            <div key={item.key} className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                                                <dt className="text-xs font-semibold uppercase tracking-wider text-gray-500">{item.label}</dt>
+                                                <dd className="mt-1 break-words text-sm text-gray-900">{item.value}</dd>
+                                            </div>
+                                        ))}
+                                    </dl>
+                                </DetailItem>
+                            ) : null}
                             {metadataText(selectedEvent.metadata) ? (
                                 <DetailItem label="Sanitized Metadata" className="sm:col-span-2">
                                     <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-5">{metadataText(selectedEvent.metadata)}</pre>
