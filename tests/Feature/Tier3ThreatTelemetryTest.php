@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Models\BlockedIp;
+use App\Models\Company;
 use App\Models\MonitoredDomain;
 use App\Models\SecurityThreatLog;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -312,7 +313,16 @@ class Tier3ThreatTelemetryTest extends TestCase
      */
     private function createTier3Domain(array $overrides = []): MonitoredDomain
     {
+        $company = Company::create([
+            'name' => fake()->unique()->company(),
+            'domain' => fake()->unique()->domainName(),
+            'type' => Company::TYPE_CLIENT,
+            'status' => Company::STATUS_ACTIVE,
+            'is_active' => true,
+        ]);
+
         return MonitoredDomain::create(array_merge([
+            'company_id' => $company->id,
             'domain' => 'protected.example.test',
             'infrastructure_type' => 'app_middleware',
             'is_active' => true,

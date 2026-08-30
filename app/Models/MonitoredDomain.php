@@ -6,6 +6,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Str;
@@ -18,6 +19,7 @@ class MonitoredDomain extends Model
      * @var list<string>
      */
     protected $fillable = [
+        'company_id',
         'domain',
         'infrastructure_type',
         'app_secret_token',
@@ -42,6 +44,7 @@ class MonitoredDomain extends Model
     protected function casts(): array
     {
         return [
+            'company_id' => 'integer',
             'infrastructure_type' => 'string',
             'is_active' => 'boolean',
             'is_owned' => 'boolean',
@@ -60,6 +63,11 @@ class MonitoredDomain extends Model
 
             $domain->app_secret_token = static::generateUniqueAppSecretToken();
         });
+    }
+
+    public function company(): BelongsTo
+    {
+        return $this->belongsTo(Company::class);
     }
 
     public function dnsSecurityLogs(): HasMany

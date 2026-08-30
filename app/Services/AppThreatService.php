@@ -113,6 +113,7 @@ class AppThreatService
         ]);
 
         $this->securityAlertDispatcher->dispatch(
+            $domain->company,
             new SecurityAlertNotification(
                 alertType: 'auto_ban',
                 domainName: $domain->domain,

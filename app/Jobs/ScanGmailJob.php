@@ -108,9 +108,7 @@ class ScanGmailJob implements ShouldQueue
                         if ($response->getId()) {
                             Log::info("🛡️ Active Defense: Quarantined Email {$email['id']} for User {$this->user->id}");
                             $scannedEmail->update(['is_quarantined' => true]);
-                            $adminEmail = 'wesleykang123@gmail.com';
-
-                            Mail::to($adminEmail)->send(new ThreatAlertMail(
+                            Mail::to($this->user->email)->send(new ThreatAlertMail(
                                 [
                                     'subject' => (string) ($email['subject'] ?? ''),
                                     'user_email' => $this->user->email,

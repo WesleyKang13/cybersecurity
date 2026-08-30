@@ -37,6 +37,11 @@ class Company extends Model
         return $this->hasMany(User::class);
     }
 
+    public function monitoredDomains(): HasMany
+    {
+        return $this->hasMany(MonitoredDomain::class);
+    }
+
     // A company has many connected gmail accounts
     public function tokens(): HasMany
     {

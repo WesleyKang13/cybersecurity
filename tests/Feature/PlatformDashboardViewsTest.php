@@ -126,13 +126,23 @@ class PlatformDashboardViewsTest extends TestCase
      */
     private function createMonitoredDomains(): array
     {
+        $company = Company::create([
+            'name' => fake()->unique()->company(),
+            'domain' => fake()->unique()->domainName(),
+            'type' => Company::TYPE_PLATFORM,
+            'status' => Company::STATUS_ACTIVE,
+            'is_active' => true,
+        ]);
+
         return [
             MonitoredDomain::create([
+                'company_id' => $company->id,
                 'domain' => 'active.example.test',
                 'infrastructure_type' => 'app_middleware',
                 'is_active' => true,
             ]),
             MonitoredDomain::create([
+                'company_id' => $company->id,
                 'domain' => 'inactive.example.test',
                 'infrastructure_type' => 'cloudflare',
                 'is_active' => false,

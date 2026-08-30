@@ -6,7 +6,6 @@ namespace App\Services;
 
 use App\Models\MonitoredDomain;
 use App\Models\SecurityThreatLog;
-use App\Notifications\SecurityAlertNotification;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
@@ -26,7 +25,7 @@ class CloudflareThreatService
     private const BLOCKED_IP_CACHE_TTL_SECONDS = 600;
 
     public function __construct(
-        private readonly SecurityAlertDispatcher $securityAlertDispatcher
+        private readonly AttackSpikeAlertService $attackSpikeAlertService
     ) {
     }
 
@@ -84,7 +83,7 @@ class CloudflareThreatService
 
                 $summary['events_synced'] += $result['events_synced'];
 
-                $this->dispatchAttackSpikeAlert($domain, $result['new_events_count']);
+                $this->attackSpikeAlertService->evaluate($domain, $result['new_events_count']);
             } catch (ConnectionException|RequestException $e) {
                 $summary['failed']++;
                 Log::warning("Cloudflare threat sync failed for {$domain->domain}: {$e->getMessage()}");
@@ -324,30 +323,4 @@ GRAPHQL;
         return $normalized !== '' ? $normalized : null;
     }
 
-    private function dispatchAttackSpikeAlert(MonitoredDomain $domain, int $newEventsCount): void
-    {
-        if ($newEventsCount < 10) {
-            return;
-        }
-
-        $cacheKey = "alert_spike_{$domain->id}";
-        $status = Cache::remember($cacheKey, 1800, static fn (): string => 'ready');
-
-        if ($status !== 'ready') {
-            return;
-        }
-
-        Cache::put($cacheKey, 'sent', 1800);
-
-        $severity = $newEventsCount >= 25 ? 'CRITICAL' : 'HIGH';
-
-        $this->securityAlertDispatcher->dispatch(
-            new SecurityAlertNotification(
-                alertType: 'attack_spike',
-                domainName: $domain->domain,
-                severity: $severity,
-                message: "Cloudflare synced {$newEventsCount} new firewall event(s) for this domain in the latest batch. Review recent attacker IPs and mitigation rules."
-            )
-        );
-    }
 }

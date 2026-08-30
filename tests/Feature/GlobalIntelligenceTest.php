@@ -309,7 +309,10 @@ class GlobalIntelligenceTest extends TestCase
 
     private function createDomain(string $domain): MonitoredDomain
     {
+        $company = $this->createCompany(Company::TYPE_CLIENT);
+
         return MonitoredDomain::create([
+            'company_id' => $company->id,
             'domain' => $domain,
             'infrastructure_type' => 'app_middleware',
             'is_active' => true,

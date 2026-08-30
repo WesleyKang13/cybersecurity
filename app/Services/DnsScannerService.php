@@ -573,6 +573,7 @@ class DnsScannerService
                 $severity = $log->severity === 'critical' ? 'CRITICAL' : 'HIGH';
 
                 $this->securityAlertDispatcher->dispatch(
+                    $monitoredDomain->company,
                     new SecurityAlertNotification(
                         alertType: 'dns_drift',
                         domainName: $monitoredDomain->domain,

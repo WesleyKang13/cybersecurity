@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\Models\Company;
 use App\Models\User;
 use App\Notifications\SecurityAlertNotification;
 use Illuminate\Http\Client\ConnectionException;
@@ -15,9 +16,20 @@ class SecurityAlertDispatcher
 {
     private const TIMEOUT_SECONDS = 5;
 
-    public function dispatch(SecurityAlertNotification $notification): void
+    public function dispatch(Company $company, SecurityAlertNotification $notification): void
     {
-        $users = User::query()
+        if ($company->status !== Company::STATUS_ACTIVE) {
+            return;
+        }
+
+        $eligibleRoles = User::rolesForCompany($company);
+
+        if ($eligibleRoles === []) {
+            return;
+        }
+
+        $users = $company->users()
+            ->whereIn('role', $eligibleRoles)
             ->where(function ($query): void {
                 $query
                     ->where('security_alert_email_enabled', true)
@@ -76,7 +88,7 @@ class SecurityAlertDispatcher
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function postWebhook(string $url, array $payload, string $channel, int $userId): void
     {
@@ -94,7 +106,7 @@ class SecurityAlertDispatcher
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function postTelegram(string $botToken, string $chatId, array $payload, int $userId): void
     {

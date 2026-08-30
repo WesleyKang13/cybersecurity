@@ -30,11 +30,14 @@ class DnsSecurityController extends Controller
     {
         $twentyFourHoursAgo = now()->subHours(24);
         $user = request()->user();
+        $companyId = (int) $user->company_id;
         $lastSynced = Cache::get('threats_last_synced');
 
         $recentThreatLogModels = SecurityThreatLog::query()
             ->with('monitoredDomain:id,domain')
-            ->whereHas('monitoredDomain', fn ($query) => $query->where('is_owned', true))
+            ->whereHas('monitoredDomain', fn ($query) => $query
+                ->where('company_id', $companyId)
+                ->where('is_owned', true))
             ->where('detected_at', '>=', $twentyFourHoursAgo)
             ->orderByDesc('detected_at')
             ->get();
@@ -42,6 +45,7 @@ class DnsSecurityController extends Controller
         $threatLogsByDomain = $recentThreatLogModels->groupBy('monitored_domain_id');
 
         $domainModels = MonitoredDomain::query()
+            ->where('company_id', $companyId)
             ->with('latestWebSecurityScan')
             ->withCount([
                 'dnsSecurityLogs as unresolved_logs_count' => fn ($query) => $query
@@ -131,6 +135,7 @@ class DnsSecurityController extends Controller
 
         $recentLogs = DnsSecurityLog::query()
             ->with('monitoredDomain:id,domain')
+            ->whereHas('monitoredDomain', fn ($query) => $query->where('company_id', $companyId))
             ->latest()
             ->take(150)
             ->get()
@@ -246,6 +251,7 @@ class DnsSecurityController extends Controller
         };
 
         $domain = MonitoredDomain::create([
+            'company_id' => $request->user()->company_id,
             'domain' => $normalizedDomain,
             'infrastructure_type' => $infrastructureType,
             'is_owned' => $isOwned,
@@ -274,8 +280,10 @@ class DnsSecurityController extends Controller
         }
     }
 
-    public function destroy(MonitoredDomain $domain): RedirectResponse
+    public function destroy(Request $request, MonitoredDomain $domain): RedirectResponse
     {
+        $this->ensureDomainBelongsToUserCompany($request, $domain);
+
         $domainName = $domain->domain;
         $domain->delete();
 
@@ -283,11 +291,14 @@ class DnsSecurityController extends Controller
     }
 
     public function scan(
+        Request $request,
         MonitoredDomain $domain,
         DnsScannerService $scanner,
         UniversalSecurityScannerService $webSecurityScanner
     ): RedirectResponse
     {
+        $this->ensureDomainBelongsToUserCompany($request, $domain);
+
         try {
             $dnsResult = $scanner->scan($domain);
             $webResult = $webSecurityScanner->scan($domain);
@@ -308,6 +319,8 @@ class DnsSecurityController extends Controller
 
     public function update(Request $request, MonitoredDomain $domain): RedirectResponse
     {
+        $this->ensureDomainBelongsToUserCompany($request, $domain);
+
         $validatedAutoBanThreshold = Validator::make(
             [
                 'auto_ban_threshold' => $request->input('auto_ban_threshold', $domain->auto_ban_threshold ?? 10),
@@ -452,7 +465,9 @@ class DnsSecurityController extends Controller
             throw new ValidationException($validator);
         }
 
-        $domain = MonitoredDomain::query()->findOrFail((int) $request->input('domain_id'));
+        $domain = MonitoredDomain::query()
+            ->where('company_id', $request->user()->company_id)
+            ->findOrFail((int) $request->input('domain_id'));
 
         if (!$domain->is_owned || blank($domain->cloudflare_zone_id)) {
             throw ValidationException::withMessages([
@@ -494,7 +509,9 @@ class DnsSecurityController extends Controller
             throw new ValidationException($validator);
         }
 
-        $domain = MonitoredDomain::query()->findOrFail((int) $request->input('domain_id'));
+        $domain = MonitoredDomain::query()
+            ->where('company_id', $request->user()->company_id)
+            ->findOrFail((int) $request->input('domain_id'));
 
         if (!$domain->is_owned || blank($domain->cloudflare_zone_id)) {
             return back()->with('error', 'This domain is not configured for Cloudflare mitigation.');
@@ -552,6 +569,14 @@ class DnsSecurityController extends Controller
         $normalized = preg_replace('/^www\./', '', $normalized) ?? $normalized;
 
         return strtolower($normalized);
+    }
+
+    private function ensureDomainBelongsToUserCompany(Request $request, MonitoredDomain $domain): void
+    {
+        abort_unless(
+            (int) $domain->company_id === (int) $request->user()?->company_id,
+            404
+        );
     }
 
     private function isValidDomain(string $domain): bool

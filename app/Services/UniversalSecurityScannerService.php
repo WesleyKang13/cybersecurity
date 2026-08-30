@@ -413,6 +413,7 @@ class UniversalSecurityScannerService
             : "The SSL/TLS certificate expires in {$daysUntilExpiry} day(s).";
 
         $this->securityAlertDispatcher->dispatch(
+            $monitoredDomain->company,
             new SecurityAlertNotification(
                 alertType: 'ssl_warning',
                 domainName: $monitoredDomain->domain,
