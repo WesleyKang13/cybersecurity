@@ -118,32 +118,32 @@ final class PortalContext
                 'security-overview',
                 'Security Overview',
                 'platform.dashboard',
-                'Security Operations',
+                'Overviews',
                 ['platform.dashboard', 'admin.dashboard']
             ),
             self::navigationItem(
                 'threat-overview',
                 'Threat Overview',
                 'platform.dashboard',
-                'Security Operations',
+                'Overviews',
                 ['platform.dashboard', 'admin.dashboard'],
                 ['tab' => 'threats']
             ),
-            self::navigationItem('dns-security', 'DNS Security', 'dns-security.index', 'Security Operations', ['dns-security.*']),
-            self::navigationItem('blocked-ips', 'Blocked IPs', 'admin.blocked-ips.index', 'Security Operations', ['admin.blocked-ips.*']),
+            self::navigationItem('dns-security', 'DNS Security', 'dns-security.index', 'Infrastructure Security', ['dns-security.*']),
             self::navigationItem(
-                'reports-analytics',
-                'Reports & Analytics',
+                'tier-3-protection',
+                'Tier 3 Protection',
                 'platform.dashboard',
-                'Security Operations',
+                'Infrastructure Security',
                 ['platform.dashboard', 'admin.dashboard'],
-                ['tab' => 'reports']
+                ['tab' => 'tier3']
             ),
+            self::navigationItem('blocked-ips', 'Blocked IPs', 'admin.blocked-ips.index', 'Infrastructure Security', ['admin.blocked-ips.*']),
             self::navigationItem(
                 'whitelist-manager',
                 'Whitelist Manager',
                 'platform.dashboard',
-                'Security Operations',
+                'Infrastructure Security',
                 ['platform.dashboard', 'admin.dashboard', 'domains.*'],
                 ['tab' => 'domains']
             ),
@@ -151,33 +151,33 @@ final class PortalContext
                 'global-intelligence',
                 'Global Intelligence',
                 'platform.dashboard',
-                'Security Operations',
+                'Intelligence & Reporting',
                 ['platform.dashboard', 'admin.dashboard'],
                 ['tab' => 'intelligence']
             ),
             self::navigationItem(
-                'tier-3-protection',
-                'Tier 3 Protection',
+                'reports-analytics',
+                'Reports & Analytics',
                 'platform.dashboard',
-                'Security Operations',
+                'Intelligence & Reporting',
                 ['platform.dashboard', 'admin.dashboard'],
-                ['tab' => 'tier3']
-            ),
-            self::navigationItem(
-                'system-health',
-                'System Health',
-                'platform.dashboard',
-                'Security Operations',
-                ['platform.dashboard', 'admin.dashboard'],
-                ['tab' => 'system']
+                ['tab' => 'reports']
             ),
             self::navigationItem(
                 'audit-trail',
                 'Audit Trail',
                 'platform.dashboard',
-                'Security Operations',
+                'Intelligence & Reporting',
                 ['platform.dashboard', 'admin.dashboard'],
                 ['tab' => 'audit']
+            ),
+            self::navigationItem(
+                'system-health',
+                'System Health',
+                'platform.dashboard',
+                'Platform Operations',
+                ['platform.dashboard', 'admin.dashboard'],
+                ['tab' => 'system']
             ),
             self::navigationItem('email-security', 'Email Security', 'dashboard', 'Personal Tools'),
             self::navigationItem('sms-scanner', 'SMS Scanner', 'sms.index', 'Personal Tools'),

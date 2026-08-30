@@ -34,13 +34,13 @@ class PortalUiSeparationTest extends TestCase
                 'security-overview',
                 'threat-overview',
                 'dns-security',
+                'tier-3-protection',
                 'blocked-ips',
-                'reports-analytics',
                 'whitelist-manager',
                 'global-intelligence',
-                'tier-3-protection',
-                'system-health',
+                'reports-analytics',
                 'audit-trail',
+                'system-health',
                 'email-security',
                 'sms-scanner',
                 'client-companies',
@@ -48,6 +48,26 @@ class PortalUiSeparationTest extends TestCase
                 'profile',
             ],
             array_column($context['sidebar_navigation'], 'key')
+        );
+        $this->assertSame(
+            [
+                'Overviews',
+                'Overviews',
+                'Infrastructure Security',
+                'Infrastructure Security',
+                'Infrastructure Security',
+                'Infrastructure Security',
+                'Intelligence & Reporting',
+                'Intelligence & Reporting',
+                'Intelligence & Reporting',
+                'Platform Operations',
+                'Personal Tools',
+                'Personal Tools',
+                'Management',
+                'Management',
+                'Account',
+            ],
+            array_column($context['sidebar_navigation'], 'section')
         );
 
         $this->actingAs($owner)
@@ -82,18 +102,36 @@ class PortalUiSeparationTest extends TestCase
                 'security-overview',
                 'threat-overview',
                 'dns-security',
+                'tier-3-protection',
                 'blocked-ips',
-                'reports-analytics',
                 'whitelist-manager',
                 'global-intelligence',
-                'tier-3-protection',
-                'system-health',
+                'reports-analytics',
                 'audit-trail',
+                'system-health',
                 'email-security',
                 'sms-scanner',
                 'profile',
             ],
             array_column($context['sidebar_navigation'], 'key')
+        );
+        $this->assertSame(
+            [
+                'Overviews',
+                'Overviews',
+                'Infrastructure Security',
+                'Infrastructure Security',
+                'Infrastructure Security',
+                'Infrastructure Security',
+                'Intelligence & Reporting',
+                'Intelligence & Reporting',
+                'Intelligence & Reporting',
+                'Platform Operations',
+                'Personal Tools',
+                'Personal Tools',
+                'Account',
+            ],
+            array_column($context['sidebar_navigation'], 'section')
         );
         $this->assertNotContains('client-companies', array_column($context['sidebar_navigation'], 'key'));
         $this->assertNotContains('platform-staff', array_column($context['sidebar_navigation'], 'key'));
