@@ -28,8 +28,9 @@ class EmailScannerService
     public function scanAndStore(User $user, array $email): array
     {
         $messageId = (string) ($email['google_message_id'] ?? '');
+        $identity = ['user_id' => $user->id, 'google_message_id' => $messageId];
         $existing = ScannedEmail::withTrashed()
-            ->where('google_message_id', $messageId)
+            ->where($identity)
             ->first();
 
         if ($existing) {
@@ -63,9 +64,10 @@ class EmailScannerService
             pdfAttachments: $pdfAttachments
         );
 
-        $record = ScannedEmail::create([
-            'user_id' => $user->id,
-            'google_message_id' => $messageId,
+        // Recover a concurrent insert by this owner, including a soft-deleted winner.
+        // createOrFirst catches only unique violations, uses a savepoint when needed,
+        // and rethrows if the write connection has no record matching this identity.
+        $record = ScannedEmail::withTrashed()->createOrFirst($identity, [
             'subject' => $subject,
             'sender' => $sender,
             'snippet' => $snippet !== '' ? $snippet : $messageBody,
@@ -80,7 +82,7 @@ class EmailScannerService
             'final_reasoning' => $analysis['final_reasoning'],
         ]);
 
-        return ['record' => $record, 'created' => true];
+        return ['record' => $record, 'created' => $record->wasRecentlyCreated];
     }
 
     public function formatResult(ScannedEmail $record, bool $created): array

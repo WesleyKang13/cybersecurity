@@ -11,6 +11,7 @@ use App\Services\EmailOriginService;
 use App\Services\EmailScannerService;
 use App\Services\LinkExtractionService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Mockery;
@@ -19,6 +20,61 @@ use Tests\TestCase;
 class ScanGmailJobTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_real_scanner_isolates_gmail_owners_and_deduplicates_job_retries(): void
+    {
+        config(['services.gemini.mode' => 'mock']);
+        Cache::flush();
+        Http::preventStrayRequests();
+        Http::fake();
+        Mail::fake();
+
+        $userA = User::factory()->create();
+        $userB = User::factory()->create([
+            'google_access_token' => 'synthetic-access-token',
+            'auto_quarantine' => false,
+        ]);
+        $scanner = app(EmailScannerService::class);
+        $original = $scanner->scanAndStore($userA, [
+            'google_message_id' => 'synthetic-gmail-shared-message',
+            'subject' => 'Private subject A',
+            'sender' => 'private@synthetic-a.xyz',
+            'snippet' => 'Private snippet A',
+        ])['record'];
+        $original->delete();
+        $originalAttributes = $original->fresh()->getRawOriginal();
+
+        $gmail = Mockery::mock('overload:App\Services\GmailService');
+        $gmail->shouldReceive('fetchLatestEmails')->once()->with(5)->andReturn([[
+            'id' => $original->google_message_id,
+            'subject' => 'Gmail subject B',
+            'from' => 'sender@synthetic-b.example',
+            'snippet' => 'Gmail snippet B',
+            'body' => 'Synthetic Gmail body B',
+        ]]);
+        $origin = Mockery::mock(EmailOriginService::class);
+        $origin->shouldNotReceive('trace');
+        $links = Mockery::mock(LinkExtractionService::class);
+        $links->shouldReceive('extractAndInspect')->twice()->andReturn([]);
+
+        (new ScanGmailJob($userB))->handle($scanner, $origin, $links);
+
+        $owned = ScannedEmail::where('user_id', $userB->id)->sole();
+        $this->assertSame('Gmail subject B', $owned->subject);
+        $this->assertSame('sender@synthetic-b.example', $owned->sender);
+        $this->assertSame('Gmail snippet B', $owned->snippet);
+        $this->assertSame('SAFE', $owned->verdict);
+        $attributes = $owned->getRawOriginal();
+        Cache::shouldReceive('remember')->never();
+
+        (new ScanGmailJob($userB))->handle($scanner, $origin, $links);
+
+        $this->assertSame($attributes, $owned->fresh()->getRawOriginal());
+        $this->assertSame($originalAttributes, $original->fresh()->getRawOriginal());
+        $this->assertDatabaseCount('scanned_emails', 2);
+        Http::assertNothingSent();
+        Mail::assertNothingSent();
+    }
 
     public function test_it_attaches_origin_trace_to_new_high_risk_scans(): void
     {
