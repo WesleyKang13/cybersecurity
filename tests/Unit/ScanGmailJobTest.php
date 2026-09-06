@@ -66,6 +66,48 @@ class ScanGmailJobTest extends TestCase
         Mail::assertNothingSent();
     }
 
+    public function test_gmail_job_does_not_auto_clear_an_authenticated_whitelisted_message_with_a_url(): void
+    {
+        config(['services.gemini.mode' => 'mock']);
+        Cache::flush();
+        Http::preventStrayRequests();
+        Mail::fake();
+        WhitelistedDomain::create(['domain' => 'trusted.example', 'is_active' => true]);
+        $user = User::factory()->create([
+            'google_access_token' => 'synthetic-access-token',
+            'auto_quarantine' => false,
+        ]);
+        $gmail = Mockery::mock('overload:App\Services\GmailService');
+        $gmail->shouldReceive('fetchLatestEmails')->once()->with(5)->andReturn([[
+            'id' => 'authenticated-whitelist-url-gmail-message',
+            'subject' => 'Quarterly update',
+            'from' => 'Finance <finance@trusted.example>',
+            'snippet' => 'Review https://routine.example/document',
+            'body' => 'Review https://routine.example/document',
+            'gmail_authentication' => new GmailAuthenticationEvidence(
+                dmarcResult: 'pass',
+                dmarcDomain: 'trusted.example',
+                spfResult: 'pass',
+                spfDomain: 'trusted.example',
+                dkimResult: 'pass',
+                dkimDomain: 'trusted.example',
+            ),
+        ]]);
+        $origin = Mockery::mock(EmailOriginService::class);
+        $origin->shouldNotReceive('trace');
+        $links = Mockery::mock(LinkExtractionService::class);
+        $links->shouldReceive('extractAndInspect')->once()->andReturn([]);
+
+        (new ScanGmailJob($user))->handle(app(EmailScannerService::class), $origin, $links);
+
+        $record = ScannedEmail::where('user_id', $user->id)->sole();
+        $this->assertSame('Layer 3 (Mock AI)', $record->detection_layer);
+        $this->assertContains('decision:layer_2_5.virustotal=unavailable', $record->analysis_chain);
+        $this->assertContains('decision:gemini_trigger=url_reputation_inconclusive', $record->analysis_chain);
+        Http::assertNothingSent();
+        Mail::assertNothingSent();
+    }
+
     public function test_real_scanner_isolates_gmail_owners_and_deduplicates_job_retries(): void
     {
         config(['services.gemini.mode' => 'mock']);

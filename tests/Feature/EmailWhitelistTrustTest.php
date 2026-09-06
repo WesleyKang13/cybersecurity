@@ -126,7 +126,7 @@ class EmailWhitelistTrustTest extends TestCase
         $this->assertContains('decision:sender_authentication=verified_aligned_dmarc_spf_dkim', $record->analysis_chain);
         $this->assertContains('decision:whitelist_benefit=accepted_verified_aligned_dmarc_spf_dkim', $record->analysis_chain);
         $this->assertContains('decision:layer_2.heuristics=ran', $record->analysis_chain);
-        $this->assertContains('decision:layer_2_5.virustotal=ran', $record->analysis_chain);
+        $this->assertContains('decision:layer_2_5.virustotal=skipped_no_url', $record->analysis_chain);
         $this->assertContains('decision:attachment_analysis=skipped_no_pdf', $record->analysis_chain);
         $this->assertContains('decision:layer_3.gemini=skipped_verified_whitelist_clean', $record->analysis_chain);
         $this->assertNotContains($email['subject'], $record->analysis_chain);

@@ -3,48 +3,51 @@
 namespace App\Services;
 
 use App\Models\ScannedUrl;
+use App\Support\VirusTotalScanResult;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class VirusTotalService
 {
-    public function scanFirstUrl($emailText)
+    /**
+     * Inspects only the first URL. This intentional quota guard is never used
+     * to auto-clear an email that contains one or more URLs.
+     *
+     * @param  array<int, string>  $urls
+     */
+    public function inspectFirstUrl(array $urls): VirusTotalScanResult
     {
-        if (strtolower((string) config('services.gemini.mode', 'live')) === 'mock') {
-            return null;
-        }
-
-        // 1. REGEX: Rip out all http/https links from the email body
-        preg_match_all('#\bhttps?://[^\s()<>]+(?:\([\w\d]+\)|([^[:punct:]\s]|/))#', $emailText, $matches);
-        $urls = array_unique($matches[0]);
-
         if (empty($urls)) {
-            return null; // No links found, nothing to do
+            return VirusTotalScanResult::skippedNoUrl();
         }
 
-        // We only scan the FIRST link to protect our 4 req/min rate limit
         $targetUrl = $urls[0];
 
-        // 2. CACHE CHECK: Have we seen this exact link before?
+        if (strtolower((string) config('services.gemini.mode', 'live')) === 'mock') {
+            return VirusTotalScanResult::forStatus('unavailable', $targetUrl);
+        }
+
+        // We only scan the FIRST link to protect our 4 req/min rate limit.
         $cached = ScannedUrl::where('url', $targetUrl)->first();
         if ($cached) {
             Log::info("VirusTotal: Pulled {$targetUrl} from Database Cache.");
-            return $cached;
+
+            return VirusTotalScanResult::cached($cached);
         }
 
-        // 3. VIRUSTOTAL API REQUEST
-        // VirusTotal v3 requires URLs to be Base64-URL encoded without the '=' padding
+        // VirusTotal v3 requires URLs to be Base64-URL encoded without the '=' padding.
         $urlIdentifier = rtrim(strtr(base64_encode($targetUrl), '+/', '-_'), '=');
         $apiKey = env('VIRUSTOTAL_API_KEY');
 
+        if (empty($apiKey)) {
+            return VirusTotalScanResult::forStatus('unavailable', $targetUrl);
+        }
+
         try {
-            // We ask VirusTotal if they have a report for this URL
             $response = Http::withHeader('x-apikey', $apiKey)
                 ->get("https://www.virustotal.com/api/v3/urls/{$urlIdentifier}");
 
-            // To protect the API limit, we force the queue worker to sleep for 15 seconds
-            // after making a request (60 seconds / 4 requests = 15s per request)
-            sleep(15);
+            $this->throttleForRateLimit();
 
             if ($response->successful()) {
                 $stats = $response->json('data.attributes.last_analysis_stats');
@@ -71,14 +74,29 @@ class VirusTotalService
 
                 $record->setAttribute('vendor_flags', $vendorFlags);
 
-                return $record;
+                return VirusTotalScanResult::apiChecked($record);
             }
 
-            return null; // URL hasn't been scanned by VT yet, or API failed
+            if ($response->status() === 404) {
+                return VirusTotalScanResult::forStatus('unknown', $targetUrl);
+            }
+
+            if ($response->status() === 429) {
+                return VirusTotalScanResult::forStatus('rate_limited', $targetUrl);
+            }
+
+            return VirusTotalScanResult::forStatus('unavailable', $targetUrl);
 
         } catch (\Exception $e) {
-            Log::error("VirusTotal Error: " . $e->getMessage());
-            return null;
+            Log::error('VirusTotal Error: '.$e->getMessage());
+
+            return VirusTotalScanResult::forStatus('failed', $targetUrl);
         }
+    }
+
+    // 60 seconds / 4 requests: preserve the provider's queue-worker quota.
+    protected function throttleForRateLimit(): void
+    {
+        sleep(15);
     }
 }

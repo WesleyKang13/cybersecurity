@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Models\ScannedEmail;
-use App\Models\ScannedUrl;
 use App\Models\User;
 use App\Models\WhitelistedDomain;
 use App\Support\GmailAuthenticationEvidence;
+use App\Support\VirusTotalScanResult;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -134,6 +134,7 @@ class EmailScannerService
         $bodyLower = strtolower($messageBody);
         $fullText = trim($subjectLower . ' ' . $snippetLower . ' ' . $bodyLower);
         $heuristicFlags = [];
+        $heuristicSignals = [];
 
         $suspiciousTlds = ['.xyz', '.top', '.click', '.buzz', '.monster', '.cc', '.su', '.ru'];
         foreach ($suspiciousTlds as $tld) {
@@ -221,12 +222,15 @@ class EmailScannerService
             }
         }
 
-        $vtInput = !empty($extractedUrls) ? implode(' ', $extractedUrls) : $fullText;
-        $vtResult = $this->virusTotalService->scanFirstUrl($vtInput);
-        $vtContext = $this->buildVirusTotalContext($vtResult, $extractedUrls);
-        $decisionTrace[] = 'decision:layer_2_5.virustotal=ran';
+        $this->addBecEscalationSignals($fullText, $heuristicFlags, $heuristicSignals);
 
-        if ($vtResult && (int) $vtResult->malicious_votes >= 3) {
+        $vtResult = empty($extractedUrls)
+            ? VirusTotalScanResult::skippedNoUrl()
+            : $this->virusTotalService->inspectFirstUrl($extractedUrls);
+        $vtContext = $this->buildVirusTotalContext($vtResult, $extractedUrls);
+        $decisionTrace[] = 'decision:layer_2_5.virustotal='.$vtResult->status;
+
+        if ($vtResult->vendorFlagCount() >= 3) {
             $decisionTrace[] = 'decision:whitelist_benefit=overridden_technical_threat';
             $decisionTrace[] = 'decision:attachment_analysis=skipped_technical_threat';
             $decisionTrace[] = 'decision:layer_3.gemini=skipped_technical_threat';
@@ -257,12 +261,19 @@ class EmailScannerService
 
         $deterministicOverride = $this->deterministicWhitelistOverride(
             heuristicFlags: $heuristicFlags,
+            heuristicSignals: $heuristicSignals,
             extractedLinks: $extractedLinks,
             pdfAttachments: $pdfAttachments,
             paymentRequests: $paymentRequestContext
         );
+        $geminiReasons = $this->geminiEscalationReasons(
+            deterministicOverride: $deterministicOverride,
+            heuristicSignals: $heuristicSignals,
+            extractedUrls: $extractedUrls,
+            virusTotalResult: $vtResult
+        );
 
-        if ($whitelistTrust['accepted'] && $deterministicOverride === null) {
+        if ($whitelistTrust['accepted'] && empty($geminiReasons)) {
             $decisionTrace[] = 'decision:layer_3.gemini=skipped_verified_whitelist_clean';
 
             return $this->withDecisionTrace($this->buildAnalysisResult(
@@ -281,12 +292,17 @@ class EmailScannerService
             ), $decisionTrace);
         }
 
-        if ($deterministicOverride !== null && $whitelistTrust['matched']) {
-            $decisionTrace[] = "decision:whitelist_benefit=overridden_{$deterministicOverride}";
+        if (! empty($geminiReasons) && $whitelistTrust['matched']) {
+            foreach ($geminiReasons as $reason) {
+                $decisionTrace[] = "decision:whitelist_benefit=overridden_{$reason}";
+            }
         }
-        $decisionTrace[] = $deterministicOverride === null
-            ? 'decision:layer_3.gemini=called_normal_policy'
-            : "decision:layer_3.gemini=called_{$deterministicOverride}";
+        foreach ($geminiReasons as $reason) {
+            $decisionTrace[] = "decision:gemini_trigger={$reason}";
+        }
+        $decisionTrace[] = $whitelistTrust['accepted'] && ! empty($geminiReasons)
+            ? "decision:layer_3.gemini=called_{$geminiReasons[0]}"
+            : 'decision:layer_3.gemini=called_normal_policy';
 
         return $this->withDecisionTrace($this->analyzeWithGemini(
             subject: $subject,
@@ -575,28 +591,31 @@ PROMPT;
         return trim($cleaned);
     }
 
-    private function buildVirusTotalContext(?ScannedUrl $vtResult, array $extractedUrls): array
+    private function buildVirusTotalContext(VirusTotalScanResult $vtResult, array $extractedUrls): array
     {
-        $vendorFlagCount = (int) ($vtResult->malicious_votes ?? 0);
+        $vendorFlagCount = $vtResult->vendorFlagCount();
 
         if ($vendorFlagCount >= 3) {
             $status = 'confirmed_technical_threat';
         } elseif ($vendorFlagCount >= 1) {
             $status = 'below_confirmation_threshold';
-        } elseif (!empty($extractedUrls)) {
-            $status = 'no_vendor_flags';
-        } else {
+        } elseif (in_array($vtResult->status, ['cache_hit_clean', 'api_checked_clean'], true)) {
+            $status = 'clean_first_url_only';
+        } elseif ($vtResult->status === 'skipped_no_url') {
             $status = 'no_urls_found';
+        } else {
+            $status = 'inconclusive';
         }
 
         return [
-            'scanned_url' => $vtResult->url ?? ($extractedUrls[0] ?? null),
+            'scanned_url' => $vtResult->scannedUrl ?? ($extractedUrls[0] ?? null),
             'vendor_flag_count' => $vendorFlagCount,
-            'vendor_flags' => array_values($vtResult->vendor_flags ?? []),
+            'vendor_flags' => $vtResult->vendorFlags(),
             'status' => $status,
-            'note' => empty($extractedUrls)
+            'lookup_outcome' => $vtResult->status,
+            'note' => $vtResult->status === 'skipped_no_url'
                 ? 'No URLs were extracted from the message.'
-                : 'Only the first extracted URL was evaluated through VirusTotal to preserve API quota.',
+                : 'Only the first extracted URL may be evaluated through VirusTotal to preserve API quota.',
         ];
     }
 
@@ -771,16 +790,22 @@ PROMPT;
 
     /**
      * @param array<int, string> $heuristicFlags
+     * @param array<int, string> $heuristicSignals
      * @param array<int, array<string, mixed>> $extractedLinks
      * @param array<int, array<string, mixed>> $pdfAttachments
      * @param array<int, array<string, mixed>> $paymentRequests
      */
     private function deterministicWhitelistOverride(
         array $heuristicFlags,
+        array $heuristicSignals,
         array $extractedLinks,
         array $pdfAttachments,
         array $paymentRequests
     ): ?string {
+        if (! empty($heuristicSignals)) {
+            return $heuristicSignals[0];
+        }
+
         if (! empty($heuristicFlags)) {
             return 'heuristic_signal';
         }
@@ -801,6 +826,101 @@ PROMPT;
         }
 
         return null;
+    }
+
+    /**
+     * These bounded indicators escalate to contextual analysis only; they do
+     * not produce a malicious verdict. Urgency alone is intentionally not a
+     * signal, avoiding a fast-path cost increase for routine messages.
+     *
+     * @param array<int, string> $heuristicFlags
+     * @param array<int, string> $heuristicSignals
+     */
+    private function addBecEscalationSignals(string $fullText, array &$heuristicFlags, array &$heuristicSignals): void
+    {
+        $hasGiftCardRequest = preg_match('/\b(?:gift[ -]?cards?)\b.{0,80}\b(?:buy|purchase|send|code|codes)\b|\b(?:buy|purchase|send)\b.{0,80}\b(?:gift[ -]?cards?)\b/i', $fullText) === 1;
+        $hasPaymentRequest = preg_match('/\b(?:change|update|new)\b.{0,50}\b(?:bank details|payment instructions|wire instructions|remittance details|direct deposit|payroll)\b|\b(?:wire transfer|transfer funds|fund transfer|pay(?:ment)?|invoice)\b.{0,80}\b(?:today|immediately|urgent|process|approve|details|instructions)\b/i', $fullText) === 1;
+        $hasCredentialRequest = preg_match('/\b(?:password|login details|credentials?|mfa code|verification code|one[- ]time code|account verification)\b.{0,80}\b(?:send|share|provide|enter|reply|verify)\b|\b(?:send|share|provide|enter|reply)\b.{0,80}\b(?:password|login details|credentials?|mfa code|verification code|one[- ]time code)\b/i', $fullText) === 1;
+        $hasCryptoRequest = preg_match('/\b(?:crypto(?:currency)?|bitcoin|wallet)\b.{0,80}\b(?:send|transfer|pay|deposit)\b|\b(?:send|transfer|pay|deposit)\b.{0,80}\b(?:crypto(?:currency)?|bitcoin|wallet)\b/i', $fullText) === 1;
+        $hasSecrecyRequest = str_contains($fullText, 'do not contact')
+            || str_contains($fullText, "don't contact")
+            || preg_match('/\b(?:keep (?:this )?(?:confidential|secret)|bypass (?:the )?(?:normal )?(?:approval|process)|without (?:normal )?approval)\b/i', $fullText) === 1;
+        $hasUrgency = preg_match('/\b(?:urgent|immediately|asap|today)\b/i', $fullText) === 1;
+
+        $this->addHeuristicSignal($heuristicFlags, $heuristicSignals, $hasGiftCardRequest, 'bec_action_request', 'Gift-card action request detected.');
+        $this->addHeuristicSignal($heuristicFlags, $heuristicSignals, $hasPaymentRequest, 'payment_request', 'Payment or bank-detail action request detected.');
+        $this->addHeuristicSignal($heuristicFlags, $heuristicSignals, $hasCredentialRequest, 'credential_request', 'Credential or MFA-code request detected.');
+        $this->addHeuristicSignal($heuristicFlags, $heuristicSignals, $hasCryptoRequest, 'bec_action_request', 'Cryptocurrency or wallet-transfer request detected.');
+        $this->addHeuristicSignal(
+            $heuristicFlags,
+            $heuristicSignals,
+            $hasSecrecyRequest && ($hasPaymentRequest || $hasCredentialRequest || $hasGiftCardRequest || $hasCryptoRequest || $hasUrgency),
+            'bec_action_request',
+            'Secrecy or approval-bypass request paired with a sensitive action detected.'
+        );
+        $this->addHeuristicSignal(
+            $heuristicFlags,
+            $heuristicSignals,
+            $hasUrgency && ($hasPaymentRequest || $hasCredentialRequest || $hasGiftCardRequest || $hasCryptoRequest),
+            'bec_action_request',
+            'Urgent sensitive action request detected.'
+        );
+    }
+
+    /**
+     * @param array<int, string> $heuristicFlags
+     * @param array<int, string> $heuristicSignals
+     */
+    private function addHeuristicSignal(array &$heuristicFlags, array &$heuristicSignals, bool $matches, string $signal, string $flag): void
+    {
+        if (! $matches) {
+            return;
+        }
+
+        $heuristicFlags[] = $flag;
+        $heuristicSignals[] = $signal;
+    }
+
+    /**
+     * @param array<int, string> $heuristicSignals
+     * @param array<int, string> $extractedUrls
+     * @return array<int, string>
+     */
+    private function geminiEscalationReasons(
+        ?string $deterministicOverride,
+        array $heuristicSignals,
+        array $extractedUrls,
+        VirusTotalScanResult $virusTotalResult
+    ): array {
+        $reasons = $heuristicSignals;
+
+        if ($deterministicOverride !== null && empty($reasons)) {
+            $reasons[] = $deterministicOverride;
+        }
+
+        if (empty($extractedUrls)) {
+            return $reasons;
+        }
+
+        if ($virusTotalResult->vendorFlagCount() > 0) {
+            $reasons[] = 'url_vendor_flags';
+        }
+
+        if (count($extractedUrls) > 1) {
+            $reasons[] = 'multiple_urls_not_fully_verified';
+        }
+
+        if (in_array($virusTotalResult->status, ['unknown', 'unavailable', 'rate_limited', 'failed'], true)) {
+            $reasons[] = 'url_reputation_inconclusive';
+        }
+
+        if (! in_array('url_vendor_flags', $reasons, true)
+            && ! in_array('multiple_urls_not_fully_verified', $reasons, true)
+            && ! in_array('url_reputation_inconclusive', $reasons, true)) {
+            $reasons[] = 'url_present';
+        }
+
+        return array_values(array_unique($reasons));
     }
 
     /**
