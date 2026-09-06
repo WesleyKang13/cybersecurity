@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Models\User;
+use App\Support\GmailAuthenticationEvidence;
 use Google\Client;
 use Google\Service\Gmail;
 use Google\Service\Exception as GoogleServiceException;
@@ -99,6 +100,7 @@ class GmailService
                         'body' => $this->extractMessageBody($payload),
                         'html_body' => $this->extractHtmlBody($payload),
                         'raw_headers' => $this->formatRawHeaders($headers),
+                        'gmail_authentication' => GmailAuthenticationEvidence::fromGmailHeaders($headers),
                         'pdf_attachments' => $this->extractPdfAttachments($service, (string) $message->getId(), $payload),
                     ];
                 } catch (Throwable $e) {

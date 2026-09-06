@@ -7,9 +7,11 @@ namespace Tests\Unit;
 use App\Jobs\ScanGmailJob;
 use App\Models\ScannedEmail;
 use App\Models\User;
+use App\Models\WhitelistedDomain;
 use App\Services\EmailOriginService;
 use App\Services\EmailScannerService;
 use App\Services\LinkExtractionService;
+use App\Support\GmailAuthenticationEvidence;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -20,6 +22,49 @@ use Tests\TestCase;
 class ScanGmailJobTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_gmail_job_passes_provider_authentication_to_the_real_whitelist_policy(): void
+    {
+        config(['services.gemini.mode' => 'mock']);
+        Cache::flush();
+        Http::preventStrayRequests();
+        Http::fake();
+        Mail::fake();
+        WhitelistedDomain::create(['domain' => 'trusted.example', 'is_active' => true]);
+        $user = User::factory()->create([
+            'google_access_token' => 'synthetic-access-token',
+            'auto_quarantine' => false,
+        ]);
+        $gmail = Mockery::mock('overload:App\Services\GmailService');
+        $gmail->shouldReceive('fetchLatestEmails')->once()->with(5)->andReturn([[
+            'id' => 'authenticated-whitelist-gmail-message',
+            'subject' => 'Quarterly update',
+            'from' => 'Finance <finance@trusted.example>',
+            'snippet' => 'The quarterly update is available.',
+            'body' => 'The quarterly update is available.',
+            'gmail_authentication' => new GmailAuthenticationEvidence(
+                dmarcResult: 'pass',
+                dmarcDomain: 'trusted.example',
+                spfResult: 'pass',
+                spfDomain: 'trusted.example',
+                dkimResult: 'pass',
+                dkimDomain: 'trusted.example',
+            ),
+        ]]);
+        $origin = Mockery::mock(EmailOriginService::class);
+        $origin->shouldNotReceive('trace');
+        $links = Mockery::mock(LinkExtractionService::class);
+        $links->shouldReceive('extractAndInspect')->once()->andReturn([]);
+
+        (new ScanGmailJob($user))->handle(app(EmailScannerService::class), $origin, $links);
+
+        $record = ScannedEmail::where('user_id', $user->id)->sole();
+        $this->assertSame('Layer 1 (Verified Whitelist)', $record->detection_layer);
+        $this->assertContains('decision:sender_authentication=verified_aligned_dmarc_spf_dkim', $record->analysis_chain);
+        $this->assertContains('decision:layer_3.gemini=skipped_verified_whitelist_clean', $record->analysis_chain);
+        Http::assertNothingSent();
+        Mail::assertNothingSent();
+    }
 
     public function test_real_scanner_isolates_gmail_owners_and_deduplicates_job_retries(): void
     {

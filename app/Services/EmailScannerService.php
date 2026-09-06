@@ -8,6 +8,7 @@ use App\Models\ScannedEmail;
 use App\Models\ScannedUrl;
 use App\Models\User;
 use App\Models\WhitelistedDomain;
+use App\Support\GmailAuthenticationEvidence;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -50,8 +51,7 @@ class EmailScannerService
         }));
         $extractedUrls = $this->buildExtractedUrls(trim($snippet . ' ' . $messageBody), $extractedLinks);
 
-        preg_match('/@([\w.-]+)/', $sender, $matches);
-        $senderDomain = isset($matches[1]) ? strtolower(trim($matches[1], '>')) : '';
+        $senderDomain = $this->extractSenderDomain($sender);
 
         $analysis = $this->runSecurityFunnel(
             subject: $subject,
@@ -61,7 +61,8 @@ class EmailScannerService
             senderDomain: $senderDomain,
             extractedUrls: $extractedUrls,
             extractedLinks: $extractedLinks,
-            pdfAttachments: $pdfAttachments
+            pdfAttachments: $pdfAttachments,
+            gmailAuthentication: $email['gmail_authentication'] ?? null
         );
 
         // Recover a concurrent insert by this owner, including a soft-deleted winner.
@@ -113,10 +114,11 @@ class EmailScannerService
         string $snippet,
         string $messageBody,
         string $sender,
-        string $senderDomain,
+        ?string $senderDomain,
         array $extractedUrls,
         array $extractedLinks,
-        array $pdfAttachments
+        array $pdfAttachments,
+        mixed $gmailAuthentication
     ): array {
         $whitelist = Cache::remember('trusted_domains', 3600, function () {
             return WhitelistedDomain::where('is_active', true)
@@ -124,22 +126,8 @@ class EmailScannerService
                 ->toArray();
         });
 
-        if (in_array($senderDomain, $whitelist, true)) {
-            return $this->buildAnalysisResult(
-                detectionLayer: 'Layer 1 (Whitelist)',
-                riskScore: 0,
-                verdict: 'SAFE',
-                threatCategory: 'None',
-                analysisChain: [
-                    "Sender domain '{$senderDomain}' matched the trusted whitelist.",
-                    'No financial, secrecy, or procedure-bypass indicators required escalation.',
-                    'VirusTotal context was not needed because the message was cleared at Layer 1.',
-                ],
-                finalReasoning: "The sender domain '{$senderDomain}' is on the trusted whitelist, so the message was auto-cleared before deeper technical analysis.",
-                severity: 'clean',
-                isThreat: false
-            );
-        }
+        $whitelistTrust = $this->assessWhitelistTrust($senderDomain, $whitelist, $gmailAuthentication);
+        $decisionTrace = $this->initialDecisionTrace($senderDomain, $whitelistTrust);
 
         $subjectLower = strtolower($subject);
         $snippetLower = strtolower($snippet);
@@ -149,8 +137,16 @@ class EmailScannerService
 
         $suspiciousTlds = ['.xyz', '.top', '.click', '.buzz', '.monster', '.cc', '.su', '.ru'];
         foreach ($suspiciousTlds as $tld) {
-            if (str_ends_with($senderDomain, $tld)) {
-                return $this->buildAnalysisResult(
+            if ($senderDomain !== null && str_ends_with($senderDomain, $tld)) {
+                if ($whitelistTrust['matched']) {
+                    $decisionTrace[] = 'decision:whitelist_benefit=overridden_suspicious_tld';
+                }
+                $decisionTrace[] = 'decision:layer_2.heuristics=terminal_suspicious_tld';
+                $decisionTrace[] = 'decision:layer_2_5.virustotal=skipped_heuristic_terminal';
+                $decisionTrace[] = 'decision:attachment_analysis=skipped_heuristic_terminal';
+                $decisionTrace[] = 'decision:layer_3.gemini=skipped_heuristic_terminal';
+
+                return $this->withDecisionTrace($this->buildAnalysisResult(
                     detectionLayer: 'Layer 2 (Heuristics)',
                     riskScore: 95,
                     verdict: 'MALICIOUS',
@@ -163,7 +159,7 @@ class EmailScannerService
                     finalReasoning: "The message was flagged as malicious because the sender domain '{$senderDomain}' uses the high-risk TLD '{$tld}', which strongly correlates with phishing infrastructure.",
                     severity: 'high',
                     isThreat: true
-                );
+                ), $decisionTrace);
             }
         }
 
@@ -178,7 +174,9 @@ class EmailScannerService
             'mail.com',
         ];
 
-        if (in_array($senderDomain, $publicProviders, true)) {
+        $decisionTrace[] = 'decision:layer_2.heuristics=ran';
+
+        if ($senderDomain !== null && in_array($senderDomain, $publicProviders, true)) {
             $urgentKeywords = [
                 'urgent',
                 'suspend',
@@ -226,9 +224,14 @@ class EmailScannerService
         $vtInput = !empty($extractedUrls) ? implode(' ', $extractedUrls) : $fullText;
         $vtResult = $this->virusTotalService->scanFirstUrl($vtInput);
         $vtContext = $this->buildVirusTotalContext($vtResult, $extractedUrls);
+        $decisionTrace[] = 'decision:layer_2_5.virustotal=ran';
 
         if ($vtResult && (int) $vtResult->malicious_votes >= 3) {
-            return $this->buildAnalysisResult(
+            $decisionTrace[] = 'decision:whitelist_benefit=overridden_technical_threat';
+            $decisionTrace[] = 'decision:attachment_analysis=skipped_technical_threat';
+            $decisionTrace[] = 'decision:layer_3.gemini=skipped_technical_threat';
+
+            return $this->withDecisionTrace($this->buildAnalysisResult(
                 detectionLayer: 'Layer 2.5 (VirusTotal API)',
                 riskScore: 100,
                 verdict: 'MALICIOUS',
@@ -241,15 +244,51 @@ class EmailScannerService
                 finalReasoning: "The message was classified as malicious because VirusTotal reported {$vtContext['vendor_flag_count']} vendor detections for {$vtContext['scanned_url']}, which exceeds the 3-vendor threshold for a confirmed technical threat.",
                 severity: 'high',
                 isThreat: true
-            );
+            ), $decisionTrace);
         }
 
         $financialContext = $this->analyzeFinancialAttachments($pdfAttachments);
+        $decisionTrace[] = empty($pdfAttachments)
+            ? 'decision:attachment_analysis=skipped_no_pdf'
+            : 'decision:attachment_analysis=ran';
         $paymentRequestContext = array_values(array_filter($financialContext, function ($result) {
             return ($result['is_payment_request'] ?? false) === true;
         }));
 
-        return $this->analyzeWithGemini(
+        $deterministicOverride = $this->deterministicWhitelistOverride(
+            heuristicFlags: $heuristicFlags,
+            extractedLinks: $extractedLinks,
+            pdfAttachments: $pdfAttachments,
+            paymentRequests: $paymentRequestContext
+        );
+
+        if ($whitelistTrust['accepted'] && $deterministicOverride === null) {
+            $decisionTrace[] = 'decision:layer_3.gemini=skipped_verified_whitelist_clean';
+
+            return $this->withDecisionTrace($this->buildAnalysisResult(
+                detectionLayer: 'Layer 1 (Verified Whitelist)',
+                riskScore: 0,
+                verdict: 'SAFE',
+                threatCategory: 'None',
+                analysisChain: [
+                    'Verified sender authentication and whitelist policy passed.',
+                    'Applicable deterministic heuristic, URL, and attachment checks completed without an escalation signal.',
+                    'Contextual Gemini analysis was skipped after the clean deterministic scan.',
+                ],
+                finalReasoning: 'The sender matched the whitelist and Gmail verified aligned DMARC, SPF, and DKIM passes; deterministic checks completed without an escalation signal.',
+                severity: 'clean',
+                isThreat: false
+            ), $decisionTrace);
+        }
+
+        if ($deterministicOverride !== null && $whitelistTrust['matched']) {
+            $decisionTrace[] = "decision:whitelist_benefit=overridden_{$deterministicOverride}";
+        }
+        $decisionTrace[] = $deterministicOverride === null
+            ? 'decision:layer_3.gemini=called_normal_policy'
+            : "decision:layer_3.gemini=called_{$deterministicOverride}";
+
+        return $this->withDecisionTrace($this->analyzeWithGemini(
             subject: $subject,
             sender: $sender,
             messageBody: $messageBody,
@@ -258,7 +297,7 @@ class EmailScannerService
             vtContext: $vtContext,
             financialContext: $paymentRequestContext,
             heuristicFlags: $heuristicFlags
-        );
+        ), $decisionTrace);
     }
 
     private function analyzeWithGemini(
@@ -559,6 +598,240 @@ PROMPT;
                 ? 'No URLs were extracted from the message.'
                 : 'Only the first extracted URL was evaluated through VirusTotal to preserve API quota.',
         ];
+    }
+
+    /**
+     * @param array<int, mixed> $whitelist
+     * @return array{matched: bool, accepted: bool, authentication: string, reason: string}
+     */
+    private function assessWhitelistTrust(?string $senderDomain, array $whitelist, mixed $gmailAuthentication): array
+    {
+        $matched = $senderDomain !== null && $this->matchesWhitelist($senderDomain, $whitelist);
+        $authentication = $this->assessGmailAuthentication($senderDomain, $gmailAuthentication);
+
+        if ($senderDomain === null) {
+            return [
+                'matched' => false,
+                'accepted' => false,
+                'authentication' => 'unverified_malformed_sender',
+                'reason' => 'sender_domain_malformed',
+            ];
+        }
+
+        if (! $matched) {
+            return [
+                'matched' => false,
+                'accepted' => false,
+                'authentication' => $authentication,
+                'reason' => 'not_matched',
+            ];
+        }
+
+        if ($authentication !== 'verified_aligned_dmarc_spf_dkim') {
+            return [
+                'matched' => true,
+                'accepted' => false,
+                'authentication' => $authentication,
+                'reason' => "rejected_{$authentication}",
+            ];
+        }
+
+        return [
+            'matched' => true,
+            'accepted' => true,
+            'authentication' => $authentication,
+            'reason' => 'accepted_verified_aligned_dmarc_spf_dkim',
+        ];
+    }
+
+    /**
+     * A whitelist bypass requires all three provider-reported mechanisms to
+     * pass and name the visible From domain. This is stricter than DMARC's
+     * one-of-SPF-or-DKIM rule by design: a missing, failed, or conflicting
+     * mechanism receives no whitelist benefit rather than a trust exception.
+     */
+    private function assessGmailAuthentication(?string $senderDomain, mixed $gmailAuthentication): string
+    {
+        if (! $gmailAuthentication instanceof GmailAuthenticationEvidence) {
+            return 'unverified_evidence_unavailable';
+        }
+
+        if ($gmailAuthentication->dmarcResult !== 'pass') {
+            return 'unverified_dmarc_not_pass';
+        }
+
+        if ($gmailAuthentication->spfResult !== 'pass') {
+            return 'unverified_spf_not_pass';
+        }
+
+        if ($gmailAuthentication->dkimResult !== 'pass') {
+            return 'unverified_dkim_not_pass';
+        }
+
+        $authenticatedDomains = [
+            'dmarc' => $this->normalizeDomain($gmailAuthentication->dmarcDomain),
+            'spf' => $this->normalizeDomain($gmailAuthentication->spfDomain),
+            'dkim' => $this->normalizeDomain($gmailAuthentication->dkimDomain),
+        ];
+
+        foreach ($authenticatedDomains as $mechanism => $authenticatedDomain) {
+            if ($senderDomain === null || $authenticatedDomain === null || $authenticatedDomain !== $senderDomain) {
+                return "unverified_{$mechanism}_misaligned";
+            }
+        }
+
+        return 'verified_aligned_dmarc_spf_dkim';
+    }
+
+    /**
+     * A whitelist root intentionally covers its subdomains. The dot boundary
+     * prevents a suffix such as trusted.example.attacker.test from matching.
+     * Invalid legacy whitelist rows are ignored rather than broadened.
+     *
+     * @param array<int, mixed> $whitelist
+     */
+    private function matchesWhitelist(string $senderDomain, array $whitelist): bool
+    {
+        foreach ($whitelist as $whitelistDomain) {
+            $normalizedWhitelistDomain = $this->normalizeDomain((string) $whitelistDomain);
+
+            if ($normalizedWhitelistDomain === null) {
+                continue;
+            }
+
+            if (
+                $senderDomain === $normalizedWhitelistDomain
+                || str_ends_with($senderDomain, ".{$normalizedWhitelistDomain}")
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function extractSenderDomain(string $sender): ?string
+    {
+        $candidate = trim($sender);
+
+        if (preg_match('/<([^<>]+)>/', $candidate, $matches)) {
+            $candidate = trim($matches[1]);
+        } elseif (preg_match('/^\s*([^\s<>@]+@[^\s<>@]+)\s*$/', $candidate, $matches)) {
+            $candidate = $matches[1];
+        } else {
+            return null;
+        }
+
+        if (! preg_match('/^([^@\s<>]+)@([^@\s<>]+)$/', $candidate, $matches)) {
+            return null;
+        }
+
+        $localPart = $matches[1];
+        $domain = $this->normalizeDomain($matches[2]);
+
+        if ($domain === null || filter_var("{$localPart}@{$domain}", FILTER_VALIDATE_EMAIL) === false) {
+            return null;
+        }
+
+        return $domain;
+    }
+
+    private function normalizeDomain(?string $domain): ?string
+    {
+        if ($domain === null) {
+            return null;
+        }
+
+        $normalized = strtolower(trim($domain, " \t\n\r\0\x0B."));
+
+        if ($normalized === '' || str_contains($normalized, '..') || strlen($normalized) > 253) {
+            return null;
+        }
+
+        if (function_exists('idn_to_ascii')) {
+            $asciiDomain = idn_to_ascii($normalized, IDNA_DEFAULT, INTL_IDNA_VARIANT_UTS46);
+            if ($asciiDomain === false) {
+                return null;
+            }
+            $normalized = strtolower($asciiDomain);
+        }
+
+        foreach (explode('.', $normalized) as $label) {
+            if (
+                $label === ''
+                || strlen($label) > 63
+                || preg_match('/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/', $label) !== 1
+            ) {
+                return null;
+            }
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param array<int, string> $heuristicFlags
+     * @param array<int, array<string, mixed>> $extractedLinks
+     * @param array<int, array<string, mixed>> $pdfAttachments
+     * @param array<int, array<string, mixed>> $paymentRequests
+     */
+    private function deterministicWhitelistOverride(
+        array $heuristicFlags,
+        array $extractedLinks,
+        array $pdfAttachments,
+        array $paymentRequests
+    ): ?string {
+        if (! empty($heuristicFlags)) {
+            return 'heuristic_signal';
+        }
+
+        foreach ($extractedLinks as $link) {
+            if (($link['has_suspicious_mismatch'] ?? false) === true) {
+                return 'suspicious_link';
+            }
+        }
+
+        if (! empty($paymentRequests)) {
+            return 'payment_attachment';
+        }
+
+        // An attachment requires contextual analysis before whitelist cost control.
+        if (! empty($pdfAttachments)) {
+            return 'attachment_present';
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array{matched: bool, accepted: bool, authentication: string, reason: string} $whitelistTrust
+     * @return array<int, string>
+     */
+    private function initialDecisionTrace(?string $senderDomain, array $whitelistTrust): array
+    {
+        return [
+            $senderDomain === null
+                ? 'decision:sender_domain=malformed'
+                : 'decision:sender_domain=normalized',
+            'decision:layer_1.whitelist_match=' . ($whitelistTrust['matched'] ? 'yes' : 'no'),
+            'decision:sender_authentication=' . $whitelistTrust['authentication'],
+            'decision:whitelist_benefit=' . $whitelistTrust['reason'],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $analysis
+     * @param array<int, string> $decisionTrace
+     * @return array<string, mixed>
+     */
+    private function withDecisionTrace(array $analysis, array $decisionTrace): array
+    {
+        $analysis['analysis_chain'] = array_values(array_unique(array_merge(
+            $decisionTrace,
+            $analysis['analysis_chain'] ?? []
+        )));
+
+        return $analysis;
     }
 
     private function buildAnalysisResult(

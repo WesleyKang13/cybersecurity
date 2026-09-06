@@ -80,6 +80,7 @@ class ScanGmailJob implements ShouldQueue
                     'body' => (string) ($email['body'] ?? $email['snippet'] ?? ''),
                     'html_body' => (string) ($email['html_body'] ?? ''),
                     'extracted_links' => $extractedLinks,
+                    'gmail_authentication' => $email['gmail_authentication'] ?? null,
                     'pdf_attachments' => $email['pdf_attachments'] ?? [],
                 ]);
 
