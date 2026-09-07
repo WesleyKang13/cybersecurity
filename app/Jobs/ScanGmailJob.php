@@ -84,7 +84,7 @@ class ScanGmailJob implements ShouldQueue
                     'pdf_attachments' => $email['pdf_attachments'] ?? [],
                 ]);
 
-                if (!$created) {
+                if (!$created || ($scannedEmail->analysis_status ?? 'completed') !== 'completed') {
                     continue;
                 }
 
@@ -109,19 +109,21 @@ class ScanGmailJob implements ShouldQueue
                         if ($response->getId()) {
                             Log::info("🛡️ Active Defense: Quarantined Email {$email['id']} for User {$this->user->id}");
                             $scannedEmail->update(['is_quarantined' => true]);
-                            Mail::to($this->user->email)->send(new ThreatAlertMail(
-                                [
-                                    'subject' => (string) ($email['subject'] ?? ''),
-                                    'user_email' => $this->user->email,
-                                ],
-                                [
-                                    'is_threat' => $scannedEmail->is_threat,
-                                    'detection_layer' => $scannedEmail->detection_layer,
-                                    'severity' => $scannedEmail->severity,
-                                    'risk_score' => $scannedEmail->risk_score,
-                                    'reason' => $scannedEmail->reason,
-                                ]
-                            ));
+                            if ($scannedEmail->newQuery()->whereKey($scannedEmail->id)->whereNull('alert_sent_at')->update(['alert_sent_at' => now()]) === 1) {
+                                Mail::to($this->user->email)->send(new ThreatAlertMail(
+                                    [
+                                        'subject' => (string) ($email['subject'] ?? ''),
+                                        'user_email' => $this->user->email,
+                                    ],
+                                    [
+                                        'is_threat' => $scannedEmail->is_threat,
+                                        'detection_layer' => $scannedEmail->detection_layer,
+                                        'severity' => $scannedEmail->severity,
+                                        'risk_score' => $scannedEmail->risk_score,
+                                        'reason' => $scannedEmail->reason,
+                                    ]
+                                ));
+                            }
                         } else {
                             Log::error("Failed to auto-quarantine: Gmail modify call returned an unexpected response for message {$email['id']}.");
                         }

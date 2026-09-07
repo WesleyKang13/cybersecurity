@@ -22,6 +22,13 @@ const VERDICT_STYLES = {
         progress: 'bg-amber-500',
         accent: 'from-amber-500/10 to-amber-500/0',
     },
+    INCONCLUSIVE: {
+        badge: 'bg-slate-100 text-slate-800 border-slate-200 dark:bg-slate-500/15 dark:text-slate-200 dark:border-slate-500/30',
+        icon: AlertTriangle,
+        iconClass: 'text-slate-600 dark:text-slate-300',
+        progress: 'bg-slate-500',
+        accent: 'from-slate-500/10 to-slate-500/0',
+    },
     CLEAN: {
         badge: 'bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-200 dark:border-emerald-500/30',
         icon: ShieldCheck,
@@ -39,13 +46,13 @@ const SEVERITY_STYLES = {
 };
 
 const normalizeVerdict = (verdict) => {
-    const normalized = String(verdict || 'CLEAN').toUpperCase();
+    const normalized = String(verdict || 'INCONCLUSIVE').toUpperCase();
 
     if (normalized === 'SAFE') {
         return 'CLEAN';
     }
 
-    return VERDICT_STYLES[normalized] ? normalized : 'CLEAN';
+    return VERDICT_STYLES[normalized] ? normalized : 'INCONCLUSIVE';
 };
 
 const clampScore = (riskScore) => {
@@ -80,10 +87,11 @@ export default function ThreatScanResultCard({ result }) {
     const [isExpanded, setIsExpanded] = useState(false);
 
     const safeResult = {
-        verdict: 'CLEAN',
-        risk_score: 0,
-        severity: 'low',
-        reason: 'No analysis provided.',
+        verdict: 'INCONCLUSIVE',
+        risk_score: 1,
+        severity: 'inconclusive',
+        reason: 'Analysis pending.',
+        analysis_status: 'processing',
         threat_category: 'None',
         analysis_chain: [],
         origin_trace: null,
@@ -123,6 +131,11 @@ export default function ThreatScanResultCard({ result }) {
                         </div>
 
                         <div className="space-y-2">
+                            {safeResult.analysis_status && safeResult.analysis_status !== 'completed' && (
+                                <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                                    {safeResult.analysis_status === 'retry_pending' ? 'Analysis retrying' : safeResult.analysis_status === 'processing' ? 'Analysis pending' : 'Analysis unavailable'}
+                                </p>
+                            )}
                             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400">
                                 Threat Category
                             </p>

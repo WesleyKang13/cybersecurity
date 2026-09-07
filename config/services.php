@@ -44,6 +44,10 @@ return [
     'gemini' => [
         'key' => env('GEMINI_API_KEY'),
         'mode' => env('AI_MODE', 'live'),
+        'requests_per_minute' => (int) env('GEMINI_REQUESTS_PER_MINUTE', 4),
+        'max_analysis_attempts' => (int) env('GEMINI_MAX_ANALYSIS_ATTEMPTS', 3),
+        'lease_seconds' => (int) env('GEMINI_ANALYSIS_LEASE_SECONDS', 120),
+        'retry_delays' => [60, 300, 900],
     ],
     'cloudflare' => [
         'api_token' => env('CLOUDFLARE_API_TOKEN'),

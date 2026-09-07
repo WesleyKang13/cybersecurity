@@ -53,7 +53,8 @@ class DashboardController extends Controller
             'snippet' => $e->snippet,
             'reason' => $e->final_reasoning ?? $e->reason ?? $e->explanation ?? 'Analysis pending...',
             'detection_layer' => $e->detection_layer,
-            'is_quarantined' => $e->is_quarantined
+            'is_quarantined' => $e->is_quarantined,
+            'analysis_status' => $e->analysis_status,
         ]));
 
         // Add SMS

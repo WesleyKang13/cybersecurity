@@ -4,14 +4,19 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\Jobs\RetryEmailAnalysisJob;
 use App\Models\ScannedEmail;
 use App\Models\User;
 use App\Models\WhitelistedDomain;
+use App\Support\GeminiAnalysisException;
 use App\Support\GmailAuthenticationEvidence;
+use App\Support\GeminiResponseValidator;
 use App\Support\VirusTotalScanResult;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Str;
 
 class EmailScannerService
 {
@@ -19,11 +24,15 @@ class EmailScannerService
     private const MAX_EXTRACTED_LINKS = 25;
     private const MAX_EXTRACTED_URLS = 50;
     private const MAX_URL_SCAN_TEXT_CHARS = 200000;
+    private const MAX_RETRY_PDF_BASE64_CHARS = 1400000;
     private const CONNECT_TIMEOUT_SECONDS = 5;
     private const REQUEST_TIMEOUT_SECONDS = 10;
 
-    public function __construct(protected VirusTotalService $virusTotalService)
+    protected GeminiResponseValidator $geminiValidator;
+
+    public function __construct(protected VirusTotalService $virusTotalService, ?GeminiResponseValidator $geminiValidator = null)
     {
+        $this->geminiValidator = $geminiValidator ?? app(GeminiResponseValidator::class);
     }
 
     public function scanAndStore(User $user, array $email): array
@@ -34,56 +43,49 @@ class EmailScannerService
             ->where($identity)
             ->first();
 
-        if ($existing) {
+        if ($existing && ($existing->trashed() || $existing->analysis_status === 'completed')) {
             return ['record' => $existing, 'created' => false];
         }
 
-        $subject = trim((string) ($email['subject'] ?? 'No Subject'));
-        $sender = trim((string) ($email['sender'] ?? 'Unknown'));
-        $snippet = trim((string) ($email['snippet'] ?? ''));
-        $body = trim((string) ($email['body'] ?? ''));
-        $messageBody = $body !== '' ? $body : $snippet;
-        $extractedLinks = $this->normalizeExtractedLinks($email['extracted_links'] ?? []);
-        $pdfAttachments = array_values(array_filter($email['pdf_attachments'] ?? [], function ($attachment) {
-            return is_array($attachment)
-                && strtolower((string) ($attachment['mime_type'] ?? '')) === 'application/pdf'
-                && !empty($attachment['base64_data']);
-        }));
-        $extractedUrls = $this->buildExtractedUrls(trim($snippet . ' ' . $messageBody), $extractedLinks);
+        $input = $this->prepareInput($email);
+        $record = $existing ?? ScannedEmail::withTrashed()->createOrFirst($identity, $this->pendingAttributes($input));
+        $created = $record->wasRecentlyCreated;
 
-        $senderDomain = $this->extractSenderDomain($sender);
+        if (! $created && ($record->trashed() || $record->analysis_status === 'completed')) {
+            return ['record' => $record, 'created' => false];
+        }
 
-        $analysis = $this->runSecurityFunnel(
-            subject: $subject,
-            snippet: $snippet,
-            messageBody: $messageBody,
-            sender: $sender,
-            senderDomain: $senderDomain,
-            extractedUrls: $extractedUrls,
-            extractedLinks: $extractedLinks,
-            pdfAttachments: $pdfAttachments,
-            gmailAuthentication: $email['gmail_authentication'] ?? null
-        );
+        if ($this->claim($record, $identity)) {
+            $record->refresh();
+            $this->analyzeClaimed($user, $record, $input);
+            $record->refresh();
+        }
 
-        // Recover a concurrent insert by this owner, including a soft-deleted winner.
-        // createOrFirst catches only unique violations, uses a savepoint when needed,
-        // and rethrows if the write connection has no record matching this identity.
-        $record = ScannedEmail::withTrashed()->createOrFirst($identity, [
-            'subject' => $subject,
-            'sender' => $sender,
-            'snippet' => $snippet !== '' ? $snippet : $messageBody,
-            'is_threat' => $analysis['is_threat'],
-            'detection_layer' => $analysis['detection_layer'],
-            'severity' => $analysis['severity'],
-            'risk_score' => $analysis['risk_score'],
-            'reason' => $analysis['reason'],
-            'verdict' => $analysis['verdict'],
-            'threat_category' => $analysis['threat_category'],
-            'analysis_chain' => $analysis['analysis_chain'],
-            'final_reasoning' => $analysis['final_reasoning'],
-        ]);
+        if ($created) {
+            // Preserve the historical API shape for a just-inserted database default.
+            $record->setAttribute('is_quarantined', null);
+        }
 
-        return ['record' => $record, 'created' => $record->wasRecentlyCreated];
+        return ['record' => $record, 'created' => $created];
+    }
+
+    public function retryIncomplete(User $user, string $messageId): ?ScannedEmail
+    {
+        $identity = ['user_id' => $user->id, 'google_message_id' => $messageId];
+        $record = ScannedEmail::withTrashed()->where($identity)->first();
+
+        if ($record === null || $record->trashed() || $record->analysis_status === 'completed' || ! is_array($record->analysis_retry_payload)) {
+            return $record;
+        }
+
+        if (! $this->claim($record, $identity, true)) {
+            return $record;
+        }
+
+        $record->refresh();
+        $this->analyzeClaimed($user, $record, $record->analysis_retry_payload);
+
+        return $record->fresh();
     }
 
     public function formatResult(ScannedEmail $record, bool $created): array
@@ -105,8 +107,195 @@ class EmailScannerService
             'origin_trace' => $record->origin_trace,
             'detection_layer' => $record->detection_layer,
             'is_quarantined' => $record->is_quarantined,
+            'analysis_status' => $record->analysis_status,
+            'analysis_attempts' => $record->analysis_attempts,
+            'analysis_next_retry_at' => $record->analysis_next_retry_at?->toIso8601String(),
             'created' => $created,
         ];
+    }
+
+    /** @return array<string, mixed> */
+    private function prepareInput(array $email): array
+    {
+        $subject = trim((string) ($email['subject'] ?? 'No Subject'));
+        $sender = trim((string) ($email['sender'] ?? 'Unknown'));
+        $snippet = trim((string) ($email['snippet'] ?? ''));
+        $body = trim((string) ($email['body'] ?? ''));
+        $pdfAttachments = array_values(array_map(function (array $attachment): array {
+            $base64 = (string) ($attachment['base64_data'] ?? '');
+
+            if (strlen($base64) > self::MAX_RETRY_PDF_BASE64_CHARS) {
+                return [
+                    'filename' => mb_substr((string) ($attachment['filename'] ?? 'attachment.pdf'), 0, 255),
+                    'mime_type' => 'application/pdf',
+                    'retry_input_too_large' => true,
+                ];
+            }
+
+            return [
+                'filename' => mb_substr((string) ($attachment['filename'] ?? 'attachment.pdf'), 0, 255),
+                'mime_type' => 'application/pdf',
+                'base64_data' => $base64,
+            ];
+        }, array_filter($email['pdf_attachments'] ?? [], fn ($attachment) => is_array($attachment)
+            && strtolower((string) ($attachment['mime_type'] ?? '')) === 'application/pdf'
+            && ! empty($attachment['base64_data']))));
+
+        return [
+            'google_message_id' => (string) ($email['google_message_id'] ?? ''),
+            'subject' => mb_substr($subject, 0, 1000),
+            'sender' => mb_substr($sender, 0, 1000),
+            'snippet' => mb_substr($snippet, 0, self::MAX_PROMPT_BODY_CHARS),
+            'body' => mb_substr($body, 0, self::MAX_PROMPT_BODY_CHARS),
+            'extracted_links' => $this->normalizeExtractedLinks($email['extracted_links'] ?? []),
+            // This encrypted payload is the minimum retry input. Raw headers and OAuth
+            // credentials are never stored; PDF bytes are cleared on completion.
+            'pdf_attachments' => array_slice($pdfAttachments, 0, 5),
+            'gmail_authentication' => $email['gmail_authentication'] ?? null,
+        ];
+    }
+
+    /** @param array<string, mixed> $input */
+    private function pendingAttributes(array $input): array
+    {
+        return [
+            'subject' => $input['subject'],
+            'sender' => $input['sender'],
+            'snippet' => $input['snippet'] !== '' ? $input['snippet'] : $input['body'],
+            'is_threat' => false,
+            'detection_layer' => 'Layer 3 (Analysis Pending)',
+            'severity' => 'inconclusive',
+            'risk_score' => 1,
+            'reason' => 'Analysis is pending.',
+            'verdict' => 'INCONCLUSIVE',
+            'threat_category' => 'None',
+            'analysis_chain' => ['Analysis has not completed yet.'],
+            'final_reasoning' => 'Analysis is pending.',
+            'analysis_status' => 'retry_pending',
+            'analysis_attempts' => 0,
+            'analysis_retry_payload' => $this->retryPayload($input),
+        ];
+    }
+
+    /** @param array<string, mixed> $input */
+    private function retryPayload(array $input): array
+    {
+        unset($input['gmail_authentication']);
+
+        return $input;
+    }
+
+    /** @param array<string, mixed> $identity */
+    private function claim(ScannedEmail $record, array $identity, bool $fromQueue = false): bool
+    {
+        $now = now();
+        $leaseToken = (string) Str::uuid();
+        $query = ScannedEmail::where('id', $record->id)->where($identity)->whereNull('deleted_at');
+
+        if ($fromQueue) {
+            // The delayed job is the scheduler. Allowing an explicitly invoked
+            // retry also makes recovery possible after a queue clock skew.
+            $query->where('analysis_status', 'retry_pending');
+        } else {
+            $query->where(function ($claimable) use ($now) {
+                $claimable->whereIn('analysis_status', ['retry_pending', 'failed'])
+                    ->orWhere(function ($stale) use ($now) {
+                        $stale->where('analysis_status', 'processing')
+                            ->where('analysis_lease_expires_at', '<=', $now);
+                    });
+            });
+        }
+
+        return $query->update([
+            'analysis_status' => 'processing',
+            'analysis_attempts' => $record->analysis_attempts + 1,
+            'analysis_last_attempted_at' => $now,
+            'analysis_next_retry_at' => null,
+            'analysis_lease_token' => $leaseToken,
+            'analysis_lease_expires_at' => $now->copy()->addSeconds((int) config('services.gemini.lease_seconds', 120)),
+        ]) === 1;
+    }
+
+    /** @param array<string, mixed> $input */
+    private function analyzeClaimed(User $user, ScannedEmail $record, array $input): void
+    {
+        $messageBody = $input['body'] !== '' ? $input['body'] : $input['snippet'];
+        $extractedLinks = $this->normalizeExtractedLinks($input['extracted_links'] ?? []);
+        $pdfAttachments = $input['pdf_attachments'] ?? [];
+        $extractedUrls = $this->buildExtractedUrls(trim($input['snippet'].' '.$messageBody), $extractedLinks);
+        $analysis = $this->runSecurityFunnel(
+            subject: $input['subject'],
+            snippet: $input['snippet'],
+            messageBody: $messageBody,
+            sender: $input['sender'],
+            senderDomain: $this->extractSenderDomain($input['sender']),
+            extractedUrls: $extractedUrls,
+            extractedLinks: $extractedLinks,
+            pdfAttachments: $pdfAttachments,
+            gmailAuthentication: $input['gmail_authentication'] ?? null
+        );
+
+        $identity = ['id' => $record->id, 'user_id' => $user->id, 'google_message_id' => $record->google_message_id, 'analysis_lease_token' => $record->analysis_lease_token];
+        $attributes = $this->analysisAttributes($analysis);
+
+        if (($analysis['analysis_status'] ?? 'completed') === 'completed') {
+            ScannedEmail::where($identity)->update(array_merge($attributes, [
+                'analysis_status' => 'completed',
+                'analysis_completed_at' => now(),
+                'analysis_last_error_code' => null,
+                'analysis_next_retry_at' => null,
+                'analysis_lease_token' => null,
+                'analysis_lease_expires_at' => null,
+                'analysis_retry_payload' => null,
+            ]));
+
+            return;
+        }
+
+        $this->persistIncomplete($record, $user, $attributes, (string) $analysis['analysis_last_error_code'], (bool) $analysis['retryable']);
+    }
+
+    /** @param array<string, mixed> $analysis @return array<string, mixed> */
+    private function analysisAttributes(array $analysis): array
+    {
+        return array_intersect_key($analysis, array_flip([
+            'is_threat', 'detection_layer', 'severity', 'risk_score', 'reason', 'verdict',
+            'threat_category', 'analysis_chain', 'final_reasoning',
+        ]));
+    }
+
+    /** @param array<string, mixed> $attributes */
+    private function persistIncomplete(ScannedEmail $record, User $user, array $attributes, string $errorCode, bool $retryable): void
+    {
+        $maxAttempts = (int) config('services.gemini.max_analysis_attempts', 3);
+        $canRetry = $retryable && $record->analysis_attempts < $maxAttempts;
+        $nextRetry = $canRetry ? now()->addSeconds($this->retryDelay($record->analysis_attempts)) : null;
+        $status = $canRetry ? 'retry_pending' : 'failed';
+        $errorCode = $canRetry ? $errorCode : ($retryable ? 'retry_exhausted' : $errorCode);
+        $updated = ScannedEmail::where([
+            'id' => $record->id,
+            'user_id' => $user->id,
+            'google_message_id' => $record->google_message_id,
+            'analysis_lease_token' => $record->analysis_lease_token,
+        ])->update(array_merge($attributes, [
+            'analysis_status' => $status,
+            'analysis_last_error_code' => $errorCode,
+            'analysis_next_retry_at' => $nextRetry,
+            'analysis_lease_token' => null,
+            'analysis_lease_expires_at' => null,
+        ]));
+
+        if ($updated === 1 && $canRetry) {
+            RetryEmailAnalysisJob::dispatch($user->id, $record->google_message_id)->delay($nextRetry);
+        }
+    }
+
+    private function retryDelay(int $attempt): int
+    {
+        $delays = config('services.gemini.retry_delays', [60, 300, 900]);
+        $base = (int) ($delays[min(max($attempt - 1, 0), count($delays) - 1)] ?? 900);
+
+        return $base + random_int(0, min(15, max(1, intdiv($base, 10))));
     }
 
     private function runSecurityFunnel(
@@ -255,6 +444,17 @@ class EmailScannerService
         $decisionTrace[] = empty($pdfAttachments)
             ? 'decision:attachment_analysis=skipped_no_pdf'
             : 'decision:attachment_analysis=ran';
+        $financialFailure = collect($financialContext)->first(fn (array $result) => ($result['analysis_incomplete'] ?? false) === true);
+
+        if ($financialFailure !== null) {
+            $decisionTrace[] = 'decision:attachment_analysis=incomplete';
+            $decisionTrace[] = 'decision:layer_3.gemini=skipped_attachment_incomplete';
+
+            return $this->withDecisionTrace($this->buildIncompleteResult(
+                (string) $financialFailure['error_code'],
+                (bool) $financialFailure['retryable']
+            ), $decisionTrace);
+        }
         $paymentRequestContext = array_values(array_filter($financialContext, function ($result) {
             return ($result['is_payment_request'] ?? false) === true;
         }));
@@ -345,20 +545,7 @@ class EmailScannerService
         if (empty($apiKey)) {
             Log::warning('Gemini API key is missing while AI mode is live.');
 
-            return $this->buildAnalysisResult(
-                detectionLayer: 'Layer 3 (AI Error)',
-                riskScore: 0,
-                verdict: 'SAFE',
-                threatCategory: 'None',
-                analysisChain: [
-                    "Sender '{$this->extractSenderEmail($sender)}' reached Layer 3 for contextual analysis.",
-                    'BEC and phishing intent analysis could not execute because the Gemini API key is missing.',
-                    'VirusTotal and financial attachment metadata were preserved, but the final AI reasoning layer was unavailable.',
-                ],
-                finalReasoning: 'AI unavailable.',
-                severity: 'clean',
-                isThreat: false
-            );
+            return $this->buildIncompleteResult('missing_api_key', false);
         }
 
         $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={$apiKey}";
@@ -415,32 +602,19 @@ You must respond ONLY with a valid JSON object matching the exact structure belo
 PROMPT;
 
         try {
-            $response = retry(3, function () use ($url, $prompt) {
-                $res = Http::withHeaders(['Content-Type' => 'application/json'])
-                    ->connectTimeout(self::CONNECT_TIMEOUT_SECONDS)
-                    ->timeout(self::REQUEST_TIMEOUT_SECONDS)
-                    ->post($url, [
-                        'contents' => [['parts' => [['text' => $prompt]]]],
-                        'generationConfig' => [
-                            'responseMimeType' => 'application/json',
-                            'temperature' => 0.1,
-                        ],
-                        'safetySettings' => [
-                            ['category' => 'HARM_CATEGORY_HARASSMENT', 'threshold' => 'BLOCK_NONE'],
-                            ['category' => 'HARM_CATEGORY_HATE_SPEECH', 'threshold' => 'BLOCK_NONE'],
-                            ['category' => 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'threshold' => 'BLOCK_NONE'],
-                            ['category' => 'HARM_CATEGORY_DANGEROUS_CONTENT', 'threshold' => 'BLOCK_NONE'],
-                        ],
-                    ]);
-
-                if ($res->failed()) {
-                    throw new \RuntimeException("Gemini API Error: {$res->status()}");
-                }
-
-                return $res;
-            }, 1000);
-
-            $result = $this->parseGeminiResponse($response->json());
+            $result = $this->geminiValidator->validateEmail($this->requestGemini($url, [
+                'contents' => [['parts' => [['text' => $prompt]]]],
+                'generationConfig' => [
+                    'responseMimeType' => 'application/json',
+                    'temperature' => 0.1,
+                ],
+                'safetySettings' => [
+                    ['category' => 'HARM_CATEGORY_HARASSMENT', 'threshold' => 'BLOCK_NONE'],
+                    ['category' => 'HARM_CATEGORY_HATE_SPEECH', 'threshold' => 'BLOCK_NONE'],
+                    ['category' => 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'threshold' => 'BLOCK_NONE'],
+                    ['category' => 'HARM_CATEGORY_DANGEROUS_CONTENT', 'threshold' => 'BLOCK_NONE'],
+                ],
+            ]));
 
             return $this->buildAnalysisResult(
                 detectionLayer: 'Layer 3 (AI Analysis)',
@@ -450,23 +624,14 @@ PROMPT;
                 analysisChain: is_array($result['analysis_chain'] ?? null) ? $result['analysis_chain'] : [],
                 finalReasoning: (string) ($result['final_reasoning'] ?? 'AI verification complete.')
             );
-        } catch (\Throwable $e) {
-            Log::error("Gemini Analysis Failed after retries: {$e->getMessage()}");
+        } catch (GeminiAnalysisException $e) {
+            Log::warning('Gemini email analysis incomplete.', ['code' => $e->errorCode]);
 
-            return $this->buildAnalysisResult(
-                detectionLayer: 'Layer 3 (AI Error)',
-                riskScore: 0,
-                verdict: 'SAFE',
-                threatCategory: 'None',
-                analysisChain: [
-                    "Sender '{$senderEmail}' reached Layer 3 for contextual analysis.",
-                    'BEC and phishing intent analysis failed because Gemini returned an invalid or unavailable response.',
-                    'VirusTotal and financial attachment metadata could not be reconciled with AI reasoning, so the system defaulted to a non-blocking fallback.',
-                ],
-                finalReasoning: 'AI unavailable.',
-                severity: 'clean',
-                isThreat: false
-            );
+            return $this->buildIncompleteResult($e->errorCode, $e->retryable);
+        } catch (\Throwable $e) {
+            Log::warning('Gemini email analysis failed unexpectedly.', ['exception' => get_class($e)]);
+
+            return $this->buildIncompleteResult('network_error', true);
         }
     }
 
@@ -476,13 +641,17 @@ PROMPT;
             return [];
         }
 
-        return array_values(array_filter(array_map(function (array $attachment) {
+        return array_values(array_map(function (array $attachment) {
             return $this->analyzeFinancialPdfAttachment($attachment);
-        }, $pdfAttachments)));
+        }, $pdfAttachments));
     }
 
     private function analyzeFinancialPdfAttachment(array $attachment): ?array
     {
+        if (($attachment['retry_input_too_large'] ?? false) === true) {
+            return $this->incompleteAttachment('attachment_too_large', false);
+        }
+
         $prompt = <<<PROMPT
 You are a Financial Security Agent. Your job is to extract payment instructions from the provided invoice/document.
 Return ONLY a JSON object with the following structure:
@@ -509,86 +678,122 @@ PROMPT;
         $apiKey = config('services.gemini.key');
         if (empty($apiKey)) {
             Log::warning('Gemini API key is missing while financial PDF analysis is live.');
-            return null;
+            return $this->incompleteAttachment('missing_api_key', false);
         }
 
         try {
-            $response = retry(3, function () use ($apiKey, $prompt, $attachment) {
-                $res = Http::withHeaders(['Content-Type' => 'application/json'])
-                    ->connectTimeout(self::CONNECT_TIMEOUT_SECONDS)
-                    ->timeout(self::REQUEST_TIMEOUT_SECONDS)
-                    ->post("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={$apiKey}", [
-                        'contents' => [[
-                            'parts' => [
-                                ['text' => $prompt],
-                                [
-                                    'inlineData' => [
-                                        'mimeType' => 'application/pdf',
-                                        'data' => (string) $attachment['base64_data'],
-                                    ],
-                                ],
-                            ],
-                        ]],
-                        'generationConfig' => [
-                            'responseMimeType' => 'application/json',
-                            'temperature' => 0.1,
+            $result = $this->geminiValidator->validateFinancialAttachment($this->requestGemini(
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={$apiKey}",
+                [
+                    'contents' => [[
+                        'parts' => [
+                            ['text' => $prompt],
+                            ['inlineData' => ['mimeType' => 'application/pdf', 'data' => (string) $attachment['base64_data']]],
                         ],
-                    ]);
-
-                if ($res->failed()) {
-                    throw new \RuntimeException("Financial Gemini API Error: {$res->status()}");
-                }
-
-                return $res;
-            }, 1000);
-
-            $result = $this->parseGeminiResponse($response->json());
+                    ]],
+                    'generationConfig' => ['responseMimeType' => 'application/json', 'temperature' => 0.1],
+                ]
+            ));
 
             return [
                 'attachment_name' => $attachment['filename'] ?? null,
-                'vendor_name' => $this->normalizeNullableString($result['vendor_name'] ?? null),
-                'invoice_amount' => $this->normalizeNullableString($result['invoice_amount'] ?? null),
-                'bank_routing_number' => $this->normalizeNullableString($result['bank_routing_number'] ?? null),
-                'bank_account_number' => $this->normalizeNullableString($result['bank_account_number'] ?? null),
-                'is_payment_request' => (bool) ($result['is_payment_request'] ?? false),
+                ...$result,
             ];
+        } catch (GeminiAnalysisException $e) {
+            Log::warning('Gemini financial attachment analysis incomplete.', ['code' => $e->errorCode]);
+
+            return $this->incompleteAttachment($e->errorCode, $e->retryable);
         } catch (\Throwable $e) {
-            Log::error("Financial PDF Analysis Failed: {$e->getMessage()}");
-            return null;
+            Log::warning('Gemini financial attachment analysis failed unexpectedly.', ['exception' => get_class($e)]);
+
+            return $this->incompleteAttachment('network_error', true);
         }
     }
 
-    private function parseGeminiResponse(array $payload): array
+    /** @return array{attachment_name: null, analysis_incomplete: true, error_code: string, retryable: bool} */
+    private function incompleteAttachment(string $errorCode, bool $retryable): array
     {
-        $textResponse = (string) ($payload['candidates'][0]['content']['parts'][0]['text'] ?? '');
-        if (trim($textResponse) === '') {
-            throw new \RuntimeException('Gemini returned an empty response.');
-        }
-
-        $sanitizedJson = $this->sanitizeJsonResponse($textResponse);
-        $decoded = json_decode($sanitizedJson, true);
-
-        if (!is_array($decoded) || json_last_error() !== JSON_ERROR_NONE) {
-            throw new \RuntimeException('Failed to decode Gemini JSON response: ' . json_last_error_msg());
-        }
-
-        return $decoded;
+        return [
+            'attachment_name' => null,
+            'analysis_incomplete' => true,
+            'error_code' => $errorCode,
+            'retryable' => $retryable,
+        ];
     }
 
-    private function sanitizeJsonResponse(string $rawResponse): string
+    /** @param array<string, mixed> $payload @return array<string, mixed> */
+    private function requestGemini(string $url, array $payload): array
     {
-        $cleaned = trim($rawResponse);
-        $cleaned = preg_replace('/^```(?:json)?\s*/i', '', $cleaned) ?? $cleaned;
-        $cleaned = preg_replace('/\s*```$/', '', $cleaned) ?? $cleaned;
+        $limit = max(1, (int) config('services.gemini.requests_per_minute', 4));
+        $response = RateLimiter::attempt('gemini-api:provider', $limit, function () use ($url, $payload) {
+            try {
+                return Http::withHeaders(['Content-Type' => 'application/json'])
+                    ->connectTimeout(self::CONNECT_TIMEOUT_SECONDS)
+                    ->timeout(self::REQUEST_TIMEOUT_SECONDS)
+                    ->post($url, $payload);
+            } catch (\Illuminate\Http\Client\ConnectionException $e) {
+                throw new GeminiAnalysisException('network_error', true, 'Gemini network request failed.');
+            }
+        }, 60);
 
-        $firstBrace = strpos($cleaned, '{');
-        $lastBrace = strrpos($cleaned, '}');
-
-        if ($firstBrace !== false && $lastBrace !== false && $lastBrace >= $firstBrace) {
-            $cleaned = substr($cleaned, $firstBrace, $lastBrace - $firstBrace + 1);
+        if ($response === false) {
+            throw new GeminiAnalysisException('rate_limited', true, 'Gemini provider rate limit is exhausted.');
         }
 
-        return trim($cleaned);
+        if (! $response instanceof \Illuminate\Http\Client\Response) {
+            throw new GeminiAnalysisException('network_error', true, 'Gemini provider did not return a response.');
+        }
+
+        if ($response->successful()) {
+            $providerPayload = $response->json();
+
+            if (! is_array($providerPayload)) {
+                throw new GeminiAnalysisException('invalid_response', true, 'Gemini provider returned a non-object response.');
+            }
+
+            return $providerPayload;
+        }
+
+        $status = $response->status();
+        if ($status === 408) {
+            throw new GeminiAnalysisException('timeout', true, 'Gemini request timed out.');
+        }
+        if ($status === 429) {
+            throw new GeminiAnalysisException('rate_limited', true, 'Gemini provider rate limited the request.');
+        }
+        if ($status >= 500) {
+            throw new GeminiAnalysisException('provider_5xx', true, 'Gemini provider failed.');
+        }
+        if (in_array($status, [401, 403], true)) {
+            throw new GeminiAnalysisException('provider_auth_error', false, 'Gemini credentials were rejected.');
+        }
+        if ($status === 400) {
+            throw new GeminiAnalysisException('invalid_request', false, 'Gemini rejected the request.');
+        }
+
+        throw new GeminiAnalysisException('provider_error', false, 'Gemini returned a permanent error.');
+    }
+
+    /** @return array<string, mixed> */
+    private function buildIncompleteResult(string $errorCode, bool $retryable): array
+    {
+        $status = $retryable ? 'retry_pending' : 'failed';
+        $message = $retryable ? 'Analysis is incomplete and will be retried.' : 'Analysis is unavailable and requires a later retry.';
+
+        return [
+            'is_threat' => false,
+            'detection_layer' => 'Layer 3 (Analysis Incomplete)',
+            'severity' => 'inconclusive',
+            'risk_score' => 1,
+            'reason' => $message,
+            'verdict' => 'INCONCLUSIVE',
+            'threat_category' => 'None',
+            'analysis_chain' => ['Contextual analysis did not complete.'],
+            'final_reasoning' => $message,
+            'analysis_status' => $status,
+            'analysis_last_error_code' => $errorCode,
+            'retryable' => $retryable,
+        ];
     }
 
     private function buildVirusTotalContext(VirusTotalScanResult $vtResult, array $extractedUrls): array
@@ -968,7 +1173,7 @@ PROMPT;
         $normalizedVerdict = strtoupper(trim($verdict));
 
         if (!in_array($normalizedVerdict, ['SAFE', 'SUSPICIOUS', 'MALICIOUS'], true)) {
-            $normalizedVerdict = 'SAFE';
+            throw new \InvalidArgumentException('Trusted analysis results must use a supported verdict.');
         }
 
         $normalizedThreatCategory = trim($threatCategory) !== '' ? trim($threatCategory) : 'None';

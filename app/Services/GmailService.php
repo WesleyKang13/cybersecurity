@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Support\GmailAuthenticationEvidence;
 use Google\Client;
 use Google\Service\Gmail;
+use Google\Service\Gmail\ModifyMessageRequest;
 use Google\Service\Exception as GoogleServiceException;
 use GuzzleHttp\Client as GuzzleClient;
 use Illuminate\Support\Facades\Log;
@@ -60,6 +61,18 @@ class GmailService
 
             throw $e;
         }
+    }
+
+    public function quarantineMessage(string $messageId): bool
+    {
+        $this->ensureValidAccessToken();
+        $service = new Gmail($this->client);
+        $response = $service->users_messages->modify('me', $messageId, new ModifyMessageRequest([
+            'addLabelIds' => ['SPAM'],
+            'removeLabelIds' => ['INBOX'],
+        ]));
+
+        return (string) $response->getId() !== '';
     }
 
     /**

@@ -7,15 +7,16 @@ export default function ThreatDetailModal({ show, onClose, email }) {
     const safeEmail = {
         subject: 'Loading...',
         sender: 'Unknown Sender',
-        severity: 'clean',
+        severity: 'inconclusive',
         snippet: 'No content available for this email.',
         reason: 'No analysis provided.',
         detection_layer: 'Unknown',
         threat_category: 'None',
         analysis_chain: [],
         origin_trace: null,
-        verdict: null,
-        risk_score: 0,
+        verdict: 'INCONCLUSIVE',
+        risk_score: 1,
+        analysis_status: 'processing',
         ...email,
     };
 
@@ -34,6 +35,7 @@ export default function ThreatDetailModal({ show, onClose, email }) {
         threat_category: safeEmail.threat_category,
         analysis_chain: safeEmail.analysis_chain,
         origin_trace: safeEmail.origin_trace,
+        analysis_status: safeEmail.analysis_status,
     };
 
     return (
