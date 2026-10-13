@@ -21,7 +21,7 @@ class ThreatOverviewPresentationTest extends TestCase
 
     public function test_enriched_and_action_fields_have_separate_labels(): void
     {
-        foreach (['Threat Type', 'Severity', 'Reason', 'Action Taken', 'Attacker IP', 'Targeted Path', 'Source', 'Application / Domain', 'Detected At', 'User Agent'] as $label) {
+        foreach (['Threat Type', 'Severity', 'Reason', 'Reported Action', 'Attacker IP', 'Targeted Path', 'Source', 'Application / Domain', 'Detected At', 'User Agent'] as $label) {
             $this->assertStringContainsString($label, $this->component);
         }
 
@@ -33,7 +33,7 @@ class ThreatOverviewPresentationTest extends TestCase
 
     public function test_legacy_events_have_explicit_non_invented_fallbacks(): void
     {
-        $this->assertStringContainsString("eventTypeLabel = (value) => formatLabel(value, 'Generic Threat')", $this->component);
+        $this->assertStringContainsString("eventTypeLabel = (value) => formatLabel(value, 'Unclassified activity')", $this->component);
         $this->assertStringContainsString("CANONICAL_SEVERITIES.includes(normalized) ? normalized : 'unclassified'", $this->component);
         $this->assertStringContainsString("formatLabel(normalizedSeverity(value), 'Unclassified')", $this->component);
     }

@@ -7,6 +7,7 @@ namespace App\Services;
 use App\Models\Company;
 use App\Models\MonitoredDomain;
 use App\Notifications\SecurityAlertNotification;
+use App\Support\ThreatEventPresentation;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -48,45 +49,72 @@ final class AttackSpikeAlertService
         $detectedAt = CarbonImmutable::now('UTC');
         $windowStart = $detectedAt->subMinutes($windowMinutes);
 
-        $eventsInWindow = $domain->securityThreatLogs()
+        $eventsInWindowQuery = $domain->securityThreatLogs()
             ->whereBetween('detected_at', [$windowStart, $detectedAt])
-            ->count();
+            ->select(['action_taken']);
+        $eventsInWindow = (clone $eventsInWindowQuery)->count();
 
         if ($eventsInWindow < $highThreshold) {
             return;
         }
 
-        $cacheKey = "security_alert:attack_spike:{$company->id}:{$domain->id}";
-        $status = Cache::remember(
-            $cacheKey,
-            self::COOLDOWN_SECONDS,
-            static fn (): string => 'ready'
-        );
+        $severity = $eventsInWindow >= $criticalThreshold ? 'CRITICAL' : 'HIGH';
+        $cacheKey = "security_alert:attack_spike:{$company->id}:{$domain->id}:{$severity}";
 
-        if ($status !== 'ready') {
+        if (! Cache::add($cacheKey, 'sent', self::COOLDOWN_SECONDS)) {
             return;
         }
 
-        Cache::put($cacheKey, 'sent', self::COOLDOWN_SECONDS);
+        $outcomes = $eventsInWindowQuery
+            ->get()
+            ->groupBy(fn ($event): string => ThreatEventPresentation::actionOutcome($event->action_taken))
+            ->map(fn ($events, string $outcome): int => $events->count())
+            ->all();
+        $outcomeSummary = $this->formatOutcomeSummary($outcomes);
 
-        $severity = $eventsInWindow >= $criticalThreshold ? 'CRITICAL' : 'HIGH';
+        try {
+            $this->securityAlertDispatcher->dispatch(
+                $company,
+                new SecurityAlertNotification(
+                    alertType: 'attack_spike',
+                    domainName: $domain->domain,
+                    severity: $severity,
+                    message: "{$eventsInWindow} attempted security events were observed during the last {$windowMinutes} minutes. Reported outcomes: {$outcomeSummary}.",
+                    detectedAt: $detectedAt,
+                    details: [
+                        'events_in_window' => $eventsInWindow,
+                        'monitoring_window_minutes' => $windowMinutes,
+                        'high_threshold' => $highThreshold,
+                        'critical_threshold' => $criticalThreshold,
+                        'new_events_added_during_latest_sync' => max(0, $newEventsAddedDuringLatestSync),
+                        'outcomes' => $outcomes,
+                    ]
+                )
+            );
+        } catch (\Throwable $exception) {
+            Log::warning('Attack spike alert delivery failed after cooldown claim.', [
+                'company_id' => $company->id,
+                'domain_id' => $domain->id,
+                'exception_class' => $exception::class,
+            ]);
+        }
+    }
 
-        $this->securityAlertDispatcher->dispatch(
-            $company,
-            new SecurityAlertNotification(
-                alertType: 'attack_spike',
-                domainName: $domain->domain,
-                severity: $severity,
-                message: "{$eventsInWindow} security events were detected during the last {$windowMinutes} minutes.",
-                detectedAt: $detectedAt,
-                details: [
-                    'events_in_window' => $eventsInWindow,
-                    'monitoring_window_minutes' => $windowMinutes,
-                    'high_threshold' => $highThreshold,
-                    'critical_threshold' => $criticalThreshold,
-                    'new_events_added_during_latest_sync' => max(0, $newEventsAddedDuringLatestSync),
-                ]
-            )
-        );
+    /**
+     * @param  array<string, int>  $outcomes
+     */
+    private function formatOutcomeSummary(array $outcomes): string
+    {
+        $parts = [];
+
+        foreach (['blocked', 'challenged', 'logged', 'allowed', 'reported'] as $outcome) {
+            if (! isset($outcomes[$outcome])) {
+                continue;
+            }
+
+            $parts[] = "{$outcomes[$outcome]} {$outcome}";
+        }
+
+        return $parts !== [] ? implode(', ', $parts) : 'outcome not reported';
     }
 }

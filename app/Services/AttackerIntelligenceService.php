@@ -5,13 +5,19 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Models\BlockedIp;
+use App\Models\MonitoredDomain;
 use App\Models\SecurityThreatLog;
+use App\Support\ThreatEventPresentation;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 
 class AttackerIntelligenceService
 {
-    public function __construct(private readonly IpIntelligenceService $ipIntelligenceService) {}
+    public function __construct(
+        private readonly IpIntelligenceService $ipIntelligenceService,
+        private readonly CloudflareIpBlockService $cloudflareIpBlockService,
+        private readonly ThreatClassificationService $threatClassificationService,
+    ) {}
 
     /**
      * @return array<string, mixed>
@@ -64,7 +70,7 @@ class AttackerIntelligenceService
                     'most_recent_event' => $attacker->most_recent_event
                         ? Carbon::parse($attacker->most_recent_event)->toIso8601String()
                         : null,
-                    'blocked_status' => $this->blockClassification($blocks),
+                    'tier_3_status' => $this->tier3BlockClassification($blocks),
                 ];
             })
             ->values()
@@ -117,6 +123,32 @@ class AttackerIntelligenceService
             'threat_types' => $this->valueBreakdown($events, 'event_type'),
             'severities' => $this->valueBreakdown($events, 'severity'),
             'actions_taken' => $this->valueBreakdown($events, 'action_taken'),
+            'recent_activity' => $events
+                ->sortByDesc('detected_at')
+                ->take(10)
+                ->map(function (SecurityThreatLog $event): array {
+                    $derivedClassification = blank($event->event_type)
+                        ? $this->threatClassificationService->classifyFromPath($event->path_targeted)
+                        : null;
+
+                    return [
+                        'id' => $event->id,
+                        'detected_at' => $event->detected_at?->toIso8601String(),
+                        'domain' => $event->monitoredDomain?->domain ?? 'Unknown application',
+                        'path_targeted' => $event->path_targeted,
+                        'event_type' => $event->event_type ?? $derivedClassification['event_type'] ?? null,
+                        'severity' => $event->severity ?? $derivedClassification['severity'] ?? null,
+                        'reason' => $event->reason ?? $derivedClassification['reason'] ?? null,
+                        'action_taken' => $event->action_taken,
+                        'action_label' => ThreatEventPresentation::actionLabel($event->action_taken),
+                        'action_outcome' => ThreatEventPresentation::actionOutcome($event->action_taken),
+                        'threat_source' => $event->threat_source,
+                        'source_label' => ThreatEventPresentation::sourceLabel($event->threat_source),
+                        'source_kind' => ThreatEventPresentation::sourceKind($event->threat_source),
+                    ];
+                })
+                ->values()
+                ->all(),
         ];
     }
 
@@ -130,17 +162,24 @@ class AttackerIntelligenceService
             ->where('ip', $ipAddress)
             ->get();
 
+        $cloudflareStatus = $this->cloudflareIpAccessRuleStatus($ipAddress);
+
         return [
-            'classification' => $this->blockClassification($blocks),
-            'globally_blocked' => $blocks->contains('is_global', true),
-            'domain_specific_blocks' => $blocks
-                ->where('is_global', false)
-                ->map(fn (BlockedIp $block): array => [
-                    'domain_id' => $block->monitored_domain_id,
-                    'domain' => $block->monitoredDomain?->domain ?? 'Unknown domain',
-                ])
-                ->values()
-                ->all(),
+            'classification' => $this->overallBlockClassification($blocks, $cloudflareStatus),
+            'tier_3' => [
+                'classification' => $this->tier3BlockClassification($blocks),
+                'global_block_list_entry' => $blocks->contains('is_global', true),
+                'domain_block_list_entries' => $blocks
+                    ->where('is_global', false)
+                    ->map(fn (BlockedIp $block): array => [
+                        'domain_id' => $block->monitored_domain_id,
+                        'domain' => $block->monitoredDomain?->domain ?? 'Unknown domain',
+                    ])
+                    ->values()
+                    ->all(),
+                'enforcement_note' => 'Tier 3 applications retrieve this block list and enforce it locally; the platform does not confirm inline blocking by each client.',
+            ],
+            'tier_2' => $cloudflareStatus,
         ];
     }
 
@@ -169,16 +208,106 @@ class AttackerIntelligenceService
     /**
      * @param  Collection<int, BlockedIp>  $blocks
      */
-    private function blockClassification(Collection $blocks): string
+    private function tier3BlockClassification(Collection $blocks): string
     {
         if ($blocks->contains('is_global', true)) {
-            return 'global';
+            return 'global_block_list_entry';
         }
 
         if ($blocks->contains('is_global', false)) {
-            return 'domain_specific';
+            return 'domain_block_list_entry';
         }
 
-        return 'not_blocked';
+        return 'not_listed';
+    }
+
+    /**
+     * @return array{
+     *     status: string,
+     *     checked_at: string,
+     *     checked_domains: list<array{domain_id: int, domain: string}>,
+     *     active_ip_access_rules: list<array{domain_id: int, domain: string, rule_id: string, created_on: string|null}>,
+     *     unavailable_domains: list<array{domain_id: int, domain: string}>
+     * }
+     */
+    private function cloudflareIpAccessRuleStatus(string $ipAddress): array
+    {
+        $observedDomainIds = SecurityThreatLog::query()
+            ->where('attacker_ip', $ipAddress)
+            ->whereNotNull('monitored_domain_id')
+            ->distinct()
+            ->pluck('monitored_domain_id');
+
+        $domains = MonitoredDomain::query()
+            ->whereIn('id', $observedDomainIds)
+            ->whereNotNull('cloudflare_zone_id')
+            ->where('cloudflare_zone_id', '!=', '')
+            ->where('is_owned', true)
+            ->orderBy('id')
+            ->get(['id', 'domain', 'cloudflare_zone_id']);
+
+        $checkedDomains = [];
+        $activeRules = [];
+        $unavailableDomains = [];
+
+        foreach ($domains as $domain) {
+            $result = $this->cloudflareIpBlockService->listAccessRules((string) $domain->cloudflare_zone_id);
+
+            if (! $result['success']) {
+                $unavailableDomains[] = [
+                    'domain_id' => $domain->id,
+                    'domain' => $domain->domain,
+                ];
+
+                continue;
+            }
+
+            $checkedDomains[] = [
+                'domain_id' => $domain->id,
+                'domain' => $domain->domain,
+            ];
+
+            foreach ($result['rules'] as $rule) {
+                if ($rule['ip_address'] !== $ipAddress) {
+                    continue;
+                }
+
+                $activeRules[] = [
+                    'domain_id' => $domain->id,
+                    'domain' => $domain->domain,
+                    'rule_id' => $rule['id'],
+                    'created_on' => $rule['created_on'],
+                ];
+            }
+        }
+
+        $status = $activeRules !== []
+            ? 'active'
+            : ($unavailableDomains !== [] ? 'unknown' : ($checkedDomains === [] ? 'not_configured' : 'not_active'));
+
+        return [
+            'status' => $status,
+            'checked_at' => now()->toIso8601String(),
+            'checked_domains' => $checkedDomains,
+            'active_ip_access_rules' => $activeRules,
+            'unavailable_domains' => $unavailableDomains,
+        ];
+    }
+
+    /**
+     * @param  Collection<int, BlockedIp>  $blocks
+     * @param  array{status: string}  $cloudflareStatus
+     */
+    private function overallBlockClassification(Collection $blocks, array $cloudflareStatus): string
+    {
+        if ($cloudflareStatus['status'] === 'active') {
+            return 'cloudflare_ip_access_rule_active';
+        }
+
+        return match ($this->tier3BlockClassification($blocks)) {
+            'global_block_list_entry' => 'tier3_global_block_list_entry',
+            'domain_block_list_entry' => 'tier3_domain_block_list_entry',
+            default => $cloudflareStatus['status'] === 'unknown' ? 'unknown' : 'no_known_block',
+        };
     }
 }

@@ -10,9 +10,7 @@ use App\Models\SecurityThreatLog;
 use App\Models\User;
 use App\Notifications\SecurityAlertNotification;
 use App\Services\AttackSpikeAlertService;
-use App\Services\DnsScannerService;
 use App\Services\SecurityAlertDispatcher;
-use App\Services\UniversalSecurityScannerService;
 use App\Support\AlertTimestampFormatter;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -98,16 +96,7 @@ class SecurityAlertHardeningTest extends TestCase
         $platformCompany = $this->createCompany(Company::TYPE_PLATFORM);
         $platformUser = $this->createAlertUser($platformCompany, User::ROLE_PLATFORM_OWNER);
 
-        $this->mock(DnsScannerService::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('scan')->once()->andReturn([
-                'vulnerability_count' => 0,
-            ]);
-        });
-        $this->mock(UniversalSecurityScannerService::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('scan')->once()->andReturn([
-                'scan' => (object) ['security_score' => 100],
-            ]);
-        });
+        \Illuminate\Support\Facades\Queue::fake();
 
         $this->actingAs($platformUser)
             ->post(route('dns-security.store'), [
@@ -123,6 +112,7 @@ class SecurityAlertHardeningTest extends TestCase
         $this->assertSame($platformCompany->id, $domain->company_id);
         $this->assertTrue($domain->company->is($platformCompany));
         $this->assertTrue($platformCompany->fresh()->monitoredDomains->contains($domain));
+        $this->assertSame('queued', $domain->universal_scan_status);
     }
 
     public function test_domain_ownership_migration_backfills_existing_domains_to_the_platform_company(): void
@@ -220,7 +210,7 @@ class SecurityAlertHardeningTest extends TestCase
             alertType: 'attack_spike',
             domainName: 'wesleyk.cloud',
             severity: 'HIGH',
-            message: '12 security events were detected during the last 10 minutes.',
+            message: '12 attempted security events were observed during the last 10 minutes. Reported outcomes: 7 blocked, 3 challenged, 2 logged.',
             detectedAt: $this->now,
             details: [
                 'events_in_window' => 12,
@@ -228,6 +218,7 @@ class SecurityAlertHardeningTest extends TestCase
                 'high_threshold' => 10,
                 'critical_threshold' => 25,
                 'new_events_added_during_latest_sync' => 10,
+                'outcomes' => ['blocked' => 7, 'challenged' => 3, 'logged' => 2],
             ]
         );
         $text = $notification->toMarkdownText();
@@ -238,12 +229,13 @@ class SecurityAlertHardeningTest extends TestCase
         $this->assertSame('Attack Spike Alert', $mail->greeting);
         $this->assertContains('Detected: 30 Aug 2026, 1:00 AM', $mail->introLines);
         $this->assertContains('Timezone: Europe/Dublin', $mail->introLines);
-        $this->assertContains('12 security events were detected during the last 10 minutes.', $mail->introLines);
+        $this->assertContains('12 attempted security events were observed during the last 10 minutes.', $mail->introLines);
+        $this->assertContains('Reported outcomes: 7 blocked, 3 challenged, 2 logged', $mail->introLines);
         $this->assertStringContainsString('**Severity:** HIGH', $text);
         $this->assertStringContainsString('**Domain:** wesleyk.cloud', $text);
         $this->assertStringContainsString('**Detected:** 30 Aug 2026, 1:00 AM', $text);
         $this->assertStringContainsString('**Timezone:** Europe/Dublin', $text);
-        $this->assertStringContainsString('12 security events were detected during the last 10 minutes.', $text);
+        $this->assertStringContainsString('12 attempted security events were observed during the last 10 minutes.', $text);
         $this->assertStringContainsString('HIGH threshold: 10 events', $text);
         $this->assertStringContainsString('CRITICAL threshold: 25 events', $text);
         $this->assertStringContainsString('New events added during latest sync: 10', $text);
@@ -293,8 +285,49 @@ class SecurityAlertHardeningTest extends TestCase
 
         Notification::assertSentTo($userA, SecurityAlertNotification::class);
         Notification::assertSentTo($userB, SecurityAlertNotification::class);
-        $this->assertTrue(Cache::has("security_alert:attack_spike:{$companyA->id}:{$domainA->id}"));
-        $this->assertTrue(Cache::has("security_alert:attack_spike:{$companyB->id}:{$domainB->id}"));
+        $this->assertTrue(Cache::has("security_alert:attack_spike:{$companyA->id}:{$domainA->id}:HIGH"));
+        $this->assertTrue(Cache::has("security_alert:attack_spike:{$companyB->id}:{$domainB->id}:HIGH"));
+    }
+
+    public function test_repeated_events_are_grouped_by_an_atomic_severity_cooldown_and_critical_escalation_is_distinct(): void
+    {
+        $company = $this->createCompany(Company::TYPE_CLIENT);
+        $user = $this->createAlertUser($company, User::ROLE_CLIENT_ADMIN);
+        $domain = $this->createDomain($company, 'grouped.example.test');
+        $this->createThreatEvents($domain, 10, $this->now->subMinutes(5));
+
+        $service = app(AttackSpikeAlertService::class);
+        $service->evaluate($domain, 10);
+        $service->evaluate($domain, 0);
+
+        Notification::assertCount(1);
+
+        $this->createThreatEvents($domain, 15, $this->now->subMinutes(4), 50);
+        $service->evaluate($domain, 15);
+
+        Notification::assertSentTo(
+            $user,
+            SecurityAlertNotification::class,
+            fn (SecurityAlertNotification $notification): bool => $notification->severity === 'CRITICAL'
+                && $notification->details['events_in_window'] === 25
+        );
+    }
+
+    public function test_delivery_failure_is_logged_and_does_not_bypass_the_cooldown(): void
+    {
+        $company = $this->createCompany(Company::TYPE_CLIENT);
+        $domain = $this->createDomain($company, 'delivery-failure.example.test');
+        $this->createThreatEvents($domain, 10, $this->now->subMinutes(5));
+
+        $this->mock(SecurityAlertDispatcher::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('dispatch')->once()->andThrow(new \RuntimeException('transport unavailable'));
+        });
+
+        $service = app(AttackSpikeAlertService::class);
+        $service->evaluate($domain, 10);
+        $service->evaluate($domain, 10);
+
+        $this->assertTrue(Cache::has("security_alert:attack_spike:{$company->id}:{$domain->id}:HIGH"));
     }
 
     private function genericNotification(string $domain = 'example.test'): SecurityAlertNotification

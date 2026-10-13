@@ -59,7 +59,9 @@ const WEB_HEADER_GUIDANCE = {
 
 const ACTION_BADGE_STYLES = {
     block: 'border-red-200 bg-red-100 text-red-800 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-200',
+    blocked: 'border-red-200 bg-red-100 text-red-800 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-200',
     challenge: 'border-amber-200 bg-amber-100 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-200',
+    challenged: 'border-amber-200 bg-amber-100 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-200',
     log: 'border-gray-300 bg-gray-100 text-gray-700 dark:border-gray-600 dark:bg-gray-700/50 dark:text-gray-200',
 };
 
@@ -125,9 +127,22 @@ const getThreatActionStyle = (action) => {
 };
 
 const getThreatActionLabel = (action) => {
-    const normalizedAction = String(action || 'log').trim();
+    const normalizedAction = String(action || 'log').trim().toLowerCase();
 
-    return normalizedAction !== '' ? normalizedAction : 'log';
+    const labels = {
+        block: 'Blocked',
+        blocked: 'Blocked',
+        challenge: 'Challenged',
+        challenged: 'Challenged',
+        js_challenge: 'Challenged',
+        managed_challenge: 'Challenged',
+        log: 'Logged',
+        logged: 'Logged',
+        allow: 'Allowed',
+        allowed: 'Allowed',
+    };
+
+    return labels[normalizedAction] || (normalizedAction !== '' ? normalizedAction.replaceAll('_', ' ') : 'Outcome not reported');
 };
 
 const getThreatRowKey = (threat) => `${threat.domain_id}:${threat.attacker_ip}`;
@@ -313,6 +328,7 @@ export default function DnsSecurityIndex({
         ...hourlyAttackVolume.map((point) => Number(point.count || 0))
     );
     const lastSyncedLabel = getRelativeSyncLabel(last_synced_at, relativeTimeNow);
+    const hasPendingUniversalScan = domains.some((domain) => ['queued', 'running'].includes(domain.universal_scan?.status));
 
     const summary = domains.reduce(
         (accumulator, domain) => {
@@ -348,6 +364,22 @@ export default function DnsSecurityIndex({
 
         return () => window.clearInterval(intervalId);
     }, []);
+
+    useEffect(() => {
+        if (!hasPendingUniversalScan) {
+            return undefined;
+        }
+
+        const timeoutId = window.setTimeout(() => {
+            router.reload({
+                only: ['domains', 'recentLogs'],
+                preserveScroll: true,
+                preserveState: true,
+            });
+        }, 3000);
+
+        return () => window.clearTimeout(timeoutId);
+    }, [hasPendingUniversalScan, domains]);
 
     useEffect(() => {
         const intervalId = window.setInterval(() => {
@@ -640,7 +672,7 @@ export default function DnsSecurityIndex({
                     }));
                     setThreatActionFeedback({
                         type: 'success',
-                        message: `Blocked ${threat.attacker_ip} on Cloudflare for ${threat.domain}.`,
+                        message: `Cloudflare IP Access Rule status refreshed for ${threat.attacker_ip} on ${threat.domain}.`,
                     });
                     closeConfirmBlockModal();
                 },
@@ -844,7 +876,8 @@ export default function DnsSecurityIndex({
                                         {domains.map((domain) => {
                                             const statusLabel = normalizeStatusLabel(domain.overall_health_status);
                                             const statusStyle = STATUS_STYLES[statusLabel] || STATUS_STYLES.Secure;
-                                            const isScanning = scanningDomainId === domain.id;
+                                            const scanStatus = domain.universal_scan?.status;
+                                            const isScanning = scanningDomainId === domain.id || ['queued', 'running'].includes(scanStatus);
                                             const isDeleting = deletingDomainId === domain.id;
                                             const isExpanded = Boolean(expandedDomains[domain.id]);
                                             const webScan = domain.web_security_scan;
@@ -913,7 +946,7 @@ export default function DnsSecurityIndex({
                                                                 ) : (
                                                                     <RefreshCw className="mr-2 h-4 w-4" />
                                                                 )}
-                                                                Scan Now
+                                                                {isScanning ? 'Scanning…' : 'Scan Now'}
                                                             </button>
 
                                                             <button
@@ -944,6 +977,12 @@ export default function DnsSecurityIndex({
                                                             </button>
                                                         </div>
                                                     </div>
+
+                                                    {scanStatus === 'failed' ? (
+                                                        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-800 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-100">
+                                                            {domain.universal_scan?.error || 'The most recent scan failed. Try again.'}
+                                                        </div>
+                                                    ) : null}
 
                                                     <div className={`grid overflow-hidden transition-all duration-300 ease-out ${isExpanded ? 'mt-4 grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
                                                         <div className="min-h-0 overflow-hidden">
@@ -1425,7 +1464,7 @@ export default function DnsSecurityIndex({
                                                                 {latestThreat ? latestThreat.detected_at_formatted : 'No recent events'}
                                                             </p>
                                                             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                                                {latestThreat ? `${latestThreat.action_taken} from ${latestThreat.country || 'Unknown'}` : 'Waiting for threat sync'}
+                                                                {latestThreat ? `${latestThreat.action_label || getThreatActionLabel(latestThreat.action_taken)} from ${latestThreat.country || 'Unknown'}` : 'Waiting for threat sync'}
                                                             </p>
                                                         </div>
 
@@ -1459,7 +1498,7 @@ export default function DnsSecurityIndex({
                                                                             </p>
                                                                         </div>
                                                                         <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${getThreatActionStyle(threat.action_taken)}`}>
-                                                                            {getThreatActionLabel(threat.action_taken)}
+                                                                            {threat.action_label || getThreatActionLabel(threat.action_taken)}
                                                                         </span>
                                                                     </div>
                                                                 </div>
@@ -1716,8 +1755,10 @@ export default function DnsSecurityIndex({
                                                     visibleThreatLogs.map((threat) => {
                                                         const threatRowKey = getThreatRowKey(threat);
                                                         const isBlockingThreat = Boolean(blockingThreatRows[threatRowKey]);
-                                                        const isBlockedThreat = Boolean(blockedThreatRows[threatRowKey]);
+                                                        const isBlockedThreat = Boolean(blockedThreatRows[threatRowKey]) || threat.mitigation?.status === 'active';
                                                         const blockThreatError = blockThreatErrors[threatRowKey];
+                                                        const mitigation = threat.mitigation || {};
+                                                        const canBlockThreat = mitigation.can_block === true && !isBlockedThreat;
 
                                                         return (
                                                             <tr key={threat.id} className="hover:bg-gray-50/80 dark:hover:bg-gray-900/30">
@@ -1751,31 +1792,37 @@ export default function DnsSecurityIndex({
                                                                 </td>
                                                                 <td className="px-4 py-4">
                                                                     <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold uppercase tracking-wide ${getThreatActionStyle(threat.action_taken)}`}>
-                                                                        {getThreatActionLabel(threat.action_taken)}
+                                                                        {threat.action_label || getThreatActionLabel(threat.action_taken)}
                                                                     </span>
                                                                 </td>
                                                                 <td className="px-4 py-4 text-sm text-gray-700 dark:text-gray-300">
-                                                                    {threat.threat_source || 'Unknown'}
+                                                                    {threat.source_label || threat.threat_source || 'Source not reported'}
                                                                 </td>
                                                                 <td className="px-4 py-4 text-sm text-gray-700 dark:text-gray-300">
                                                                     <div className="flex flex-col items-start gap-2">
-                                                                        <button
-                                                                            type="button"
-                                                                            onClick={() => openConfirmBlockModal(threat)}
-                                                                            disabled={isBlockingThreat || isBlockedThreat}
-                                                                            className="inline-flex items-center rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-200"
-                                                                        >
-                                                                            {isBlockingThreat ? (
-                                                                                <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
-                                                                            ) : null}
-                                                                            {isBlockedThreat ? 'Blocked' : 'Block IP'}
-                                                                        </button>
-
-                                                                        {isBlockedThreat && (
-                                                                            <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-200">
-                                                                                Blocked on Cloudflare
+                                                                        {canBlockThreat ? (
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => openConfirmBlockModal(threat)}
+                                                                                disabled={isBlockingThreat}
+                                                                                className="inline-flex items-center rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-200"
+                                                                            >
+                                                                                {isBlockingThreat ? (
+                                                                                    <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
+                                                                                ) : null}
+                                                                                Block IP
+                                                                            </button>
+                                                                        ) : (
+                                                                            <span className="inline-flex rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[11px] font-semibold text-gray-700 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200">
+                                                                                {isBlockedThreat ? 'Already Blocked' : (mitigation.label || 'No action available')}
                                                                             </span>
                                                                         )}
+
+                                                                        {mitigation.detail ? (
+                                                                            <span className="max-w-xs text-xs leading-5 text-gray-500 dark:text-gray-400">
+                                                                                {mitigation.detail}
+                                                                            </span>
+                                                                        ) : null}
 
                                                                         {blockThreatError ? (
                                                                             <span className="text-xs text-red-600 dark:text-red-300">

@@ -9,6 +9,7 @@ use App\Models\Company;
 use App\Models\MonitoredDomain;
 use App\Models\SecurityThreatLog;
 use App\Models\User;
+use App\Services\CloudflareIpBlockService;
 use App\Services\IpIntelligenceService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -138,9 +139,11 @@ class GlobalIntelligenceTest extends TestCase
             ->assertJsonPath('data.observations.top_applications.1.count', 1)
             ->assertJsonPath('data.observations.threat_types.0.value', 'wordpress_probe')
             ->assertJsonPath('data.observations.threat_types.0.count', 2)
-            ->assertJsonPath('data.block_status.classification', 'domain_specific')
-            ->assertJsonPath('data.block_status.globally_blocked', false)
-            ->assertJsonPath('data.block_status.domain_specific_blocks.0.domain', 'app-two.example.test');
+            ->assertJsonPath('data.block_status.classification', 'tier3_domain_block_list_entry')
+            ->assertJsonPath('data.block_status.tier_3.classification', 'domain_block_list_entry')
+            ->assertJsonPath('data.block_status.tier_3.domain_block_list_entries.0.domain', 'app-two.example.test')
+            ->assertJsonPath('data.block_status.tier_2.status', 'not_configured')
+            ->assertJsonPath('data.observations.recent_activity.0.action_label', 'Logged');
 
         $response->assertJsonFragment(['value' => 'failed_login', 'count' => 1]);
         $response->assertJsonFragment(['value' => 'unclassified', 'count' => 1]);
@@ -187,7 +190,7 @@ class GlobalIntelligenceTest extends TestCase
             ->assertJsonPath('data.hosting', true);
     }
 
-    public function test_block_status_distinguishes_global_domain_specific_and_not_blocked_ips(): void
+    public function test_block_status_distinguishes_tier_three_entries_and_unknown_cloudflare_status(): void
     {
         $owner = $this->createUser(
             $this->createCompany(Company::TYPE_PLATFORM),
@@ -213,21 +216,57 @@ class GlobalIntelligenceTest extends TestCase
         $this->actingAs($owner)
             ->getJson(route('admin.ip-intelligence', '203.0.113.40'))
             ->assertOk()
-            ->assertJsonPath('data.block_status.classification', 'global')
-            ->assertJsonPath('data.block_status.globally_blocked', true);
+            ->assertJsonPath('data.block_status.classification', 'tier3_global_block_list_entry')
+            ->assertJsonPath('data.block_status.tier_3.global_block_list_entry', true);
 
         $this->actingAs($owner)
             ->getJson(route('admin.ip-intelligence', '203.0.113.41'))
             ->assertOk()
-            ->assertJsonPath('data.block_status.classification', 'domain_specific')
-            ->assertJsonPath('data.block_status.domain_specific_blocks.0.domain', 'blocked.example.test');
+            ->assertJsonPath('data.block_status.classification', 'tier3_domain_block_list_entry')
+            ->assertJsonPath('data.block_status.tier_3.domain_block_list_entries.0.domain', 'blocked.example.test');
 
         $this->actingAs($owner)
             ->getJson(route('admin.ip-intelligence', '203.0.113.42'))
             ->assertOk()
-            ->assertJsonPath('data.block_status.classification', 'not_blocked')
-            ->assertJsonPath('data.block_status.globally_blocked', false)
-            ->assertJsonCount(0, 'data.block_status.domain_specific_blocks');
+            ->assertJsonPath('data.block_status.classification', 'no_known_block')
+            ->assertJsonPath('data.block_status.tier_3.global_block_list_entry', false)
+            ->assertJsonCount(0, 'data.block_status.tier_3.domain_block_list_entries');
+    }
+
+    public function test_ip_investigation_confirms_a_current_cloudflare_ip_access_rule_without_conflating_it_with_tier_three(): void
+    {
+        $owner = $this->createUser($this->createCompany(Company::TYPE_PLATFORM), User::ROLE_PLATFORM_OWNER);
+        $domain = $this->createDomain('edge.example.test', [
+            'infrastructure_type' => 'cloudflare',
+            'is_owned' => true,
+            'cloudflare_zone_id' => 'zone-123',
+        ]);
+
+        $this->mockIpIntelligence();
+        $this->createThreatEvent($domain, '203.0.113.99', '2026-10-13 11:59:00', [
+            'threat_source' => 'firewallManaged',
+            'action_taken' => 'block',
+        ]);
+        $this->mock(CloudflareIpBlockService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('listAccessRules')->once()->with('zone-123')->andReturn([
+                'success' => true,
+                'message' => 'Access rules loaded successfully.',
+                'rules' => [[
+                    'id' => 'rule-123',
+                    'ip_address' => '203.0.113.99',
+                    'notes' => 'Test block',
+                    'created_on' => '2026-10-13T12:00:00Z',
+                ]],
+            ]);
+        });
+
+        $this->actingAs($owner)
+            ->getJson(route('admin.ip-intelligence', '203.0.113.99'))
+            ->assertOk()
+            ->assertJsonPath('data.block_status.classification', 'cloudflare_ip_access_rule_active')
+            ->assertJsonPath('data.block_status.tier_2.status', 'active')
+            ->assertJsonPath('data.block_status.tier_2.active_ip_access_rules.0.domain', $domain->domain)
+            ->assertJsonPath('data.block_status.tier_3.classification', 'not_listed');
     }
 
     public function test_global_intelligence_dashboard_returns_attacker_rollups_instead_of_event_rows(): void
@@ -259,7 +298,7 @@ class GlobalIntelligenceTest extends TestCase
                 ->where('top_attackers.0.attacker_ip', '203.0.113.70')
                 ->where('top_attackers.0.total_events', 2)
                 ->where('top_attackers.0.applications_targeted', 2)
-                ->where('top_attackers.0.blocked_status', 'global')
+                ->where('top_attackers.0.tier_3_status', 'global_block_list_entry')
                 ->has('security_threat_events', 0)
                 ->has('tier_3_domains', 0)
                 ->missing('top_targeted_paths')
@@ -307,16 +346,16 @@ class GlobalIntelligenceTest extends TestCase
         ]);
     }
 
-    private function createDomain(string $domain): MonitoredDomain
+    private function createDomain(string $domain, array $overrides = []): MonitoredDomain
     {
         $company = $this->createCompany(Company::TYPE_CLIENT);
 
-        return MonitoredDomain::create([
+        return MonitoredDomain::create(array_merge([
             'company_id' => $company->id,
             'domain' => $domain,
             'infrastructure_type' => 'app_middleware',
             'is_active' => true,
-        ]);
+        ], $overrides));
     }
 
     /**

@@ -4,37 +4,41 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers;
 
+use App\Jobs\RunUniversalSecurityScan;
+use App\Models\BlockedIp;
 use App\Models\DnsSecurityLog;
 use App\Models\MonitoredDomain;
 use App\Models\SecurityThreatLog;
 use App\Services\CloudflareIpBlockService;
-use App\Services\DnsScannerService;
 use App\Services\IpIntelligenceService;
-use App\Services\UniversalSecurityScannerService;
+use App\Services\ThreatClassificationService;
+use App\Support\ThreatEventPresentation;
 use App\Support\ThreatMetadata;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
-use Throwable;
 
 class DnsSecurityController extends Controller
 {
-    public function index(CloudflareIpBlockService $cloudflareIpBlockService): Response
-    {
+    public function index(
+        CloudflareIpBlockService $cloudflareIpBlockService,
+        ThreatClassificationService $threatClassificationService
+    ): Response {
         $twentyFourHoursAgo = now()->subHours(24);
         $user = request()->user();
         $companyId = (int) $user->company_id;
         $lastSynced = Cache::get('threats_last_synced');
 
         $recentThreatLogModels = SecurityThreatLog::query()
-            ->with('monitoredDomain:id,domain')
+            ->with('monitoredDomain:id,domain,infrastructure_type,cloudflare_zone_id')
             ->whereHas('monitoredDomain', fn ($query) => $query
                 ->where('company_id', $companyId)
                 ->where('is_owned', true))
@@ -67,25 +71,46 @@ class DnsSecurityController extends Controller
             ->get();
         $domainModels->each->makeVisible('app_secret_token');
 
-        $activeAccessRules = $this->loadActiveAccessRules($domainModels, $cloudflareIpBlockService);
+        $accessRuleData = $this->loadActiveAccessRules($domainModels, $cloudflareIpBlockService);
+        $activeAccessRules = $accessRuleData['rules'];
+        $activeRuleIpsByDomain = collect($activeAccessRules)
+            ->groupBy('domain_id')
+            ->map(fn ($rules) => collect($rules)->keyBy('ip_address'));
+        $blockedIpsByIp = BlockedIp::query()
+            ->whereIn(
+                'ip',
+                $recentThreatLogModels
+                    ->pluck('attacker_ip')
+                    ->filter(static fn (mixed $ip): bool => is_string($ip) && trim($ip) !== '')
+                    ->unique()
+                    ->values()
+            )
+            ->get()
+            ->groupBy('ip');
 
         $domains = $domainModels
-            ->map(function (MonitoredDomain $domain) use ($threatLogsByDomain): array {
+            ->map(function (MonitoredDomain $domain) use ($threatLogsByDomain, $threatClassificationService): array {
                 $webSecurityScan = $domain->latestWebSecurityScan;
                 $recentThreats = $threatLogsByDomain
                     ->get($domain->id, collect())
                     ->take(5)
-                    ->map(function (SecurityThreatLog $log): array {
+                    ->map(function (SecurityThreatLog $log) use ($threatClassificationService): array {
+                        $derivedClassification = blank($log->event_type)
+                            ? $threatClassificationService->classifyFromPath($log->path_targeted)
+                            : null;
+
                         return [
                             'id' => $log->id,
                             'attacker_ip' => $log->attacker_ip,
                             'country' => $log->country,
                             'path_targeted' => $log->path_targeted,
-                            'event_type' => $log->event_type,
-                            'severity' => $log->severity,
-                            'reason' => $log->reason,
+                            'event_type' => $log->event_type ?? $derivedClassification['event_type'] ?? null,
+                            'severity' => $log->severity ?? $derivedClassification['severity'] ?? null,
+                            'reason' => $log->reason ?? $derivedClassification['reason'] ?? null,
                             'action_taken' => $log->action_taken,
                             'threat_source' => $log->threat_source,
+                            'action_label' => ThreatEventPresentation::actionLabel($log->action_taken),
+                            'source_label' => ThreatEventPresentation::sourceLabel($log->threat_source),
                             'detected_at' => $log->detected_at?->toIso8601String(),
                             'detected_at_formatted' => $log->detected_at?->diffForHumans() ?? 'Unknown',
                         ];
@@ -105,6 +130,14 @@ class DnsSecurityController extends Controller
                     'last_checked_at_formatted' => $domain->last_checked_at
                         ? $domain->last_checked_at->diffForHumans()
                         : 'Never scanned',
+                    'universal_scan' => [
+                        'status' => $domain->universal_scan_status,
+                        'requested_at' => $domain->universal_scan_requested_at?->toIso8601String(),
+                        'started_at' => $domain->universal_scan_started_at?->toIso8601String(),
+                        'completed_at' => $domain->universal_scan_completed_at?->toIso8601String(),
+                        'failed_at' => $domain->universal_scan_failed_at?->toIso8601String(),
+                        'error' => $domain->universal_scan_error,
+                    ],
                     'unresolved_logs_count' => (int) $domain->unresolved_logs_count,
                     'critical_count' => (int) $domain->critical_count,
                     'high_count' => (int) $domain->high_count,
@@ -159,7 +192,11 @@ class DnsSecurityController extends Controller
             ->values();
 
         $recentThreatLogs = $recentThreatLogModels
-            ->map(function (SecurityThreatLog $log): array {
+            ->map(function (SecurityThreatLog $log) use ($accessRuleData, $activeRuleIpsByDomain, $blockedIpsByIp, $threatClassificationService): array {
+                $derivedClassification = blank($log->event_type)
+                    ? $threatClassificationService->classifyFromPath($log->path_targeted)
+                    : null;
+
                 return [
                     'id' => $log->id,
                     'domain_id' => $log->monitored_domain_id,
@@ -167,12 +204,22 @@ class DnsSecurityController extends Controller
                     'attacker_ip' => $log->attacker_ip,
                     'country' => $log->country,
                     'path_targeted' => $log->path_targeted,
-                    'event_type' => $log->event_type,
-                    'severity' => $log->severity,
-                    'reason' => $log->reason,
+                    'event_type' => $log->event_type ?? $derivedClassification['event_type'] ?? null,
+                    'severity' => $log->severity ?? $derivedClassification['severity'] ?? null,
+                    'reason' => $log->reason ?? $derivedClassification['reason'] ?? null,
                     'metadata' => ThreatMetadata::sanitized($log->metadata),
                     'action_taken' => $log->action_taken,
                     'threat_source' => $log->threat_source,
+                    'action_label' => ThreatEventPresentation::actionLabel($log->action_taken),
+                    'action_outcome' => ThreatEventPresentation::actionOutcome($log->action_taken),
+                    'source_label' => ThreatEventPresentation::sourceLabel($log->threat_source),
+                    'source_kind' => ThreatEventPresentation::sourceKind($log->threat_source),
+                    'mitigation' => $this->threatMitigationStatus(
+                        $log,
+                        $accessRuleData['status_by_domain'],
+                        $activeRuleIpsByDomain,
+                        $blockedIpsByIp
+                    ),
                     'user_agent' => $log->user_agent,
                     'detected_at' => $log->detected_at?->toIso8601String(),
                     'detected_at_formatted' => $log->detected_at?->format('Y-m-d H:i:s T'),
@@ -208,11 +255,7 @@ class DnsSecurityController extends Controller
         ]);
     }
 
-    public function store(
-        Request $request,
-        DnsScannerService $scanner,
-        UniversalSecurityScannerService $webSecurityScanner
-    ): RedirectResponse
+    public function store(Request $request): RedirectResponse
     {
         $normalizedDomain = $this->normalizeDomainInput((string) $request->input('domain', ''));
         $infrastructureType = trim((string) $request->input('infrastructure_type', 'universal'));
@@ -232,7 +275,7 @@ class DnsSecurityController extends Controller
         );
 
         $validator->after(function ($validator) use ($normalizedDomain, $infrastructureType, $normalizedZoneId): void {
-            if (!$this->isValidDomain($normalizedDomain)) {
+            if (! $this->isValidDomain($normalizedDomain)) {
                 $validator->errors()->add('domain', 'Enter a valid domain name.');
             }
 
@@ -259,25 +302,16 @@ class DnsSecurityController extends Controller
             'is_active' => true,
         ]);
 
-        try {
-            $dnsResult = $scanner->scan($domain);
-            $webResult = $webSecurityScanner->scan($domain);
-            $integrationMessage = $infrastructureType === 'app_middleware'
-                ? ' Integration credentials are ready in the domain settings view.'
-                : '';
+        $this->queueUniversalScan($domain);
 
-            return back()->with(
-                'success',
-                "Domain '{$normalizedDomain}' added and scanned successfully. {$dnsResult['vulnerability_count']} DNS issue(s) detected. Web security score: {$webResult['scan']->security_score}/100.{$integrationMessage}"
-            );
-        } catch (Throwable $e) {
-            Log::error("Initial DNS scan failed for {$normalizedDomain}: {$e->getMessage()}");
+        $integrationMessage = $infrastructureType === 'app_middleware'
+            ? ' Integration credentials are ready in the domain settings view.'
+            : '';
 
-            return back()->with(
-                'error',
-                "Domain '{$normalizedDomain}' was added, but the initial scan failed. You can retry manually."
-            );
-        }
+        return back()->with(
+            'success',
+            "Domain '{$normalizedDomain}' added. Its initial security scan has been queued.{$integrationMessage}"
+        );
     }
 
     public function destroy(Request $request, MonitoredDomain $domain): RedirectResponse
@@ -290,31 +324,15 @@ class DnsSecurityController extends Controller
         return back()->with('success', "Domain '{$domainName}' removed from DNS monitoring.");
     }
 
-    public function scan(
-        Request $request,
-        MonitoredDomain $domain,
-        DnsScannerService $scanner,
-        UniversalSecurityScannerService $webSecurityScanner
-    ): RedirectResponse
+    public function scan(Request $request, MonitoredDomain $domain): RedirectResponse
     {
         $this->ensureDomainBelongsToUserCompany($request, $domain);
 
-        try {
-            $dnsResult = $scanner->scan($domain);
-            $webResult = $webSecurityScanner->scan($domain);
-
-            return back()->with(
-                'success',
-                "DNS and web security scan completed for '{$domain->domain}'. {$dnsResult['vulnerability_count']} DNS issue(s) detected. Web security score: {$webResult['scan']->security_score}/100."
-            );
-        } catch (Throwable $e) {
-            Log::error("Manual DNS scan failed for {$domain->domain}: {$e->getMessage()}");
-
-            return back()->with(
-                'error',
-                "DNS scan failed for '{$domain->domain}'. Please try again."
-            );
+        if (! $this->queueUniversalScan($domain)) {
+            return back()->with('success', "A security scan for '{$domain->domain}' is already in progress.");
         }
+
+        return back()->with('success', "Security scan queued for '{$domain->domain}'.");
     }
 
     public function update(Request $request, MonitoredDomain $domain): RedirectResponse
@@ -469,19 +487,46 @@ class DnsSecurityController extends Controller
             ->where('company_id', $request->user()->company_id)
             ->findOrFail((int) $request->input('domain_id'));
 
-        if (!$domain->is_owned || blank($domain->cloudflare_zone_id)) {
+        if (! $domain->is_owned || blank($domain->cloudflare_zone_id)) {
             throw ValidationException::withMessages([
                 'block_ip' => 'This domain is not configured for Cloudflare mitigation.',
             ]);
         }
 
         $ipAddress = (string) $request->input('ip_address');
-        $result = $cloudflareIpBlockService->blockIp((string) $domain->cloudflare_zone_id, $ipAddress);
+        $lockKey = 'cloudflare_ip_block_request:'.hash('sha256', $domain->cloudflare_zone_id.'|'.$ipAddress);
+        $lockToken = bin2hex(random_bytes(16));
 
-        if (!$result['success']) {
+        if (! Cache::add($lockKey, $lockToken, now()->addSeconds(20))) {
             throw ValidationException::withMessages([
-                'block_ip' => $result['message'],
+                'block_ip' => 'A Cloudflare block request for this IP is already in progress. Refresh to confirm the current rule status.',
             ]);
+        }
+
+        try {
+            $existingRules = $cloudflareIpBlockService->listAccessRules((string) $domain->cloudflare_zone_id);
+
+            if (! $existingRules['success']) {
+                throw ValidationException::withMessages([
+                    'block_ip' => 'Cloudflare IP Access Rule status could not be verified. No block request was sent.',
+                ]);
+            }
+
+            if ($this->hasAccessRuleForIp($existingRules['rules'], $ipAddress)) {
+                return back()->with('success', "{$ipAddress} is already blocked by a Cloudflare IP Access Rule for '{$domain->domain}'.");
+            }
+
+            $result = $cloudflareIpBlockService->blockIp((string) $domain->cloudflare_zone_id, $ipAddress);
+
+            if (! $result['success']) {
+                throw ValidationException::withMessages([
+                    'block_ip' => $result['message'],
+                ]);
+            }
+        } finally {
+            if (Cache::get($lockKey) === $lockToken) {
+                Cache::forget($lockKey);
+            }
         }
 
         Log::info('Cloudflare IP mitigation deployed from DNS Security Dashboard.', [
@@ -513,14 +558,14 @@ class DnsSecurityController extends Controller
             ->where('company_id', $request->user()->company_id)
             ->findOrFail((int) $request->input('domain_id'));
 
-        if (!$domain->is_owned || blank($domain->cloudflare_zone_id)) {
+        if (! $domain->is_owned || blank($domain->cloudflare_zone_id)) {
             return back()->with('error', 'This domain is not configured for Cloudflare mitigation.');
         }
 
         $ruleId = trim((string) $request->input('rule_id'));
         $result = $cloudflareIpBlockService->deleteAccessRule((string) $domain->cloudflare_zone_id, $ruleId);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             return back()->with('error', $result['message']);
         }
 
@@ -579,6 +624,47 @@ class DnsSecurityController extends Controller
         );
     }
 
+    private function queueUniversalScan(MonitoredDomain $domain): bool
+    {
+        return DB::transaction(function () use ($domain): bool {
+            $lockedDomain = MonitoredDomain::query()
+                ->whereKey($domain->id)
+                ->where('company_id', $domain->company_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if (in_array($lockedDomain->universal_scan_status, ['queued', 'running'], true)) {
+                return false;
+            }
+
+            $lockedDomain->forceFill([
+                'universal_scan_status' => 'queued',
+                'universal_scan_requested_at' => now(),
+                'universal_scan_started_at' => null,
+                'universal_scan_completed_at' => null,
+                'universal_scan_failed_at' => null,
+                'universal_scan_error' => null,
+            ])->save();
+
+            RunUniversalSecurityScan::dispatch(
+                (int) $lockedDomain->id,
+                (int) $lockedDomain->company_id
+            )->afterCommit();
+
+            return true;
+        });
+    }
+
+    /**
+     * @param  list<array{id: string, ip_address: string, notes: string|null, created_on: string|null}>  $rules
+     */
+    private function hasAccessRuleForIp(array $rules, string $ipAddress): bool
+    {
+        return collect($rules)->contains(
+            static fn (array $rule): bool => hash_equals((string) $rule['ip_address'], $ipAddress)
+        );
+    }
+
     private function isValidDomain(string $domain): bool
     {
         return $domain !== ''
@@ -604,7 +690,7 @@ class DnsSecurityController extends Controller
     }
 
     /**
-     * @param \Illuminate\Support\Collection<int, \App\Models\SecurityThreatLog> $threatLogs
+     * @param  \Illuminate\Support\Collection<int, \App\Models\SecurityThreatLog>  $threatLogs
      * @return list<array{time: string, count: int}>
      */
     private function buildHourlyAttackVolume($threatLogs, Carbon $windowStart): array
@@ -635,7 +721,7 @@ class DnsSecurityController extends Controller
     }
 
     /**
-     * @param \Illuminate\Support\Collection<int, \App\Models\SecurityThreatLog> $threatLogs
+     * @param  \Illuminate\Support\Collection<int, \App\Models\SecurityThreatLog>  $threatLogs
      * @return list<array{path: string, count: int, percentage: float}>
      */
     private function buildTopTargetedPaths($threatLogs): array
@@ -660,7 +746,7 @@ class DnsSecurityController extends Controller
     }
 
     /**
-     * @param \Illuminate\Support\Collection<int, \App\Models\SecurityThreatLog> $threatLogs
+     * @param  \Illuminate\Support\Collection<int, \App\Models\SecurityThreatLog>  $threatLogs
      * @return list<array{country: string, count: int, percentage: float}>
      */
     private function buildTopOriginCountries($threatLogs): array
@@ -685,8 +771,8 @@ class DnsSecurityController extends Controller
     }
 
     /**
-     * @param \Illuminate\Support\Collection<int, \App\Models\MonitoredDomain> $domainModels
-     * @return list<array{
+     * @param  \Illuminate\Support\Collection<int, \App\Models\MonitoredDomain>  $domainModels
+     * @return array{rules: list<array{
      *     id: string,
      *     domain_id: int,
      *     domain: string,
@@ -694,43 +780,130 @@ class DnsSecurityController extends Controller
      *     notes: string|null,
      *     created_on: string|null,
      *     created_on_formatted: string
-     * }>
+     * }, status_by_domain: array<int, array{status: string}>}
      */
     private function loadActiveAccessRules($domainModels, CloudflareIpBlockService $cloudflareIpBlockService): array
     {
-        return $domainModels
-            ->filter(
-                fn (MonitoredDomain $domain): bool => $domain->is_owned
-                    && filled($domain->cloudflare_zone_id)
-            )
-            ->flatMap(function (MonitoredDomain $domain) use ($cloudflareIpBlockService) {
-                $zoneId = trim((string) $domain->cloudflare_zone_id);
-                $result = $cloudflareIpBlockService->listAccessRules($zoneId);
+        $rules = [];
+        $statusByDomain = [];
 
-                if (!$result['success']) {
-                    Log::warning("Cloudflare access rule lookup failed for {$domain->domain}: {$result['message']}");
+        foreach ($domainModels as $domain) {
+            if (! $domain->is_owned || blank($domain->cloudflare_zone_id)) {
+                continue;
+            }
 
-                    return [];
-                }
+            $result = $cloudflareIpBlockService->listAccessRules((string) $domain->cloudflare_zone_id);
 
-                return collect($result['rules'])->map(function (array $rule) use ($domain): array {
-                    $createdOn = $rule['created_on'];
+            if (! $result['success']) {
+                Log::warning('Cloudflare access rule lookup failed.', [
+                    'domain_id' => $domain->id,
+                ]);
+                $statusByDomain[$domain->id] = ['status' => 'unknown'];
 
-                    return [
-                        'id' => $rule['id'],
-                        'domain_id' => $domain->id,
-                        'domain' => $domain->domain,
-                        'ip_address' => $rule['ip_address'],
-                        'notes' => $rule['notes'],
-                        'created_on' => $createdOn,
-                        'created_on_formatted' => $createdOn !== null
-                            ? \Illuminate\Support\Carbon::parse($createdOn)->format('Y-m-d H:i:s T')
-                            : 'Unknown',
-                    ];
-                });
-            })
-            ->sortByDesc(fn (array $rule): string => (string) ($rule['created_on'] ?? ''))
-            ->values()
-            ->all();
+                continue;
+            }
+
+            $statusByDomain[$domain->id] = ['status' => 'synced'];
+
+            foreach ($result['rules'] as $rule) {
+                $createdOn = $rule['created_on'];
+                $rules[] = [
+                    'id' => $rule['id'],
+                    'domain_id' => $domain->id,
+                    'domain' => $domain->domain,
+                    'ip_address' => $rule['ip_address'],
+                    'notes' => $rule['notes'],
+                    'created_on' => $createdOn,
+                    'created_on_formatted' => $createdOn !== null
+                        ? \Illuminate\Support\Carbon::parse($createdOn)->format('Y-m-d H:i:s T')
+                        : 'Unknown',
+                ];
+            }
+        }
+
+        usort($rules, static fn (array $left, array $right): int => strcmp(
+            (string) ($right['created_on'] ?? ''),
+            (string) ($left['created_on'] ?? '')
+        ));
+
+        return [
+            'rules' => $rules,
+            'status_by_domain' => $statusByDomain,
+        ];
+    }
+
+    /**
+     * @param  array<int, array{status: string}>  $accessRuleStatusByDomain
+     * @param  \Illuminate\Support\Collection<int, \Illuminate\Support\Collection<int, array<string, mixed>>>  $activeRuleIpsByDomain
+     * @param  \Illuminate\Support\Collection<string, \Illuminate\Support\Collection<int, BlockedIp>>  $blockedIpsByIp
+     * @return array{mechanism: string, status: string, label: string, detail: string, can_block: bool}
+     */
+    private function threatMitigationStatus(
+        SecurityThreatLog $threat,
+        array $accessRuleStatusByDomain,
+        $activeRuleIpsByDomain,
+        $blockedIpsByIp
+    ): array {
+        $domain = $threat->monitoredDomain;
+
+        if ($domain?->infrastructure_type === 'app_middleware') {
+            $matchingBlocks = collect($blockedIpsByIp->get($threat->attacker_ip, collect()));
+            $isListed = $matchingBlocks->contains(
+                fn (BlockedIp $block): bool => $block->is_global || $block->monitored_domain_id === $threat->monitored_domain_id
+            );
+
+            return [
+                'mechanism' => 'tier3_block_list',
+                'status' => $isListed ? 'active' : 'not_listed',
+                'label' => $isListed ? 'Tier 3 block-list entry' : 'Not on the Tier 3 block list',
+                'detail' => $isListed
+                    ? 'Tier 3 clients retrieve this entry and enforce it locally; this telemetry does not confirm inline platform blocking.'
+                    : 'Tier 3 telemetry is separate from Cloudflare IP Access Rules.',
+                'can_block' => false,
+            ];
+        }
+
+        $domainStatus = $accessRuleStatusByDomain[$threat->monitored_domain_id]['status'] ?? 'not_configured';
+        $activeRule = $activeRuleIpsByDomain
+            ->get($threat->monitored_domain_id, collect())
+            ->get($threat->attacker_ip);
+
+        if ($activeRule !== null) {
+            return [
+                'mechanism' => 'cloudflare_ip_access_rule',
+                'status' => 'active',
+                'label' => 'Already blocked by Cloudflare IP Access Rule',
+                'detail' => 'An active Cloudflare IP Access Rule matches this IP and domain.',
+                'can_block' => false,
+            ];
+        }
+
+        if ($domainStatus === 'unknown') {
+            return [
+                'mechanism' => 'cloudflare_ip_access_rule',
+                'status' => 'unknown',
+                'label' => 'Cloudflare rule status not synced',
+                'detail' => 'The current Cloudflare IP Access Rule status could not be verified, so another block request is unavailable.',
+                'can_block' => false,
+            ];
+        }
+
+        if ($domainStatus === 'synced') {
+            return [
+                'mechanism' => 'cloudflare_ip_access_rule',
+                'status' => 'not_active',
+                'label' => 'No Cloudflare IP Access Rule',
+                'detail' => 'No active Cloudflare IP Access Rule matches this IP for this domain.',
+                'can_block' => true,
+            ];
+        }
+
+        return [
+            'mechanism' => 'none',
+            'status' => 'not_applicable',
+            'label' => 'No Cloudflare mitigation configured',
+            'detail' => 'This event is not eligible for a Cloudflare IP Access Rule from this screen.',
+            'can_block' => false,
+        ];
     }
 }

@@ -18,7 +18,7 @@ class SecurityAlertNotification extends Notification
     private readonly CarbonImmutable $detectedAt;
 
     /**
-     * @param  array<string, int|string>  $details
+     * @param  array<string, int|string|array<string, int>>  $details
      */
     public function __construct(
         public readonly string $alertType,
@@ -180,7 +180,7 @@ class SecurityAlertNotification extends Notification
         $highThreshold = (int) ($this->details['high_threshold'] ?? 0);
         $criticalThreshold = (int) ($this->details['critical_threshold'] ?? 0);
         $lines = [
-            "{$eventsInWindow} security events were detected during the last {$windowMinutes} minutes.",
+            "{$eventsInWindow} attempted security events were observed during the last {$windowMinutes} minutes.",
             "HIGH threshold: {$highThreshold} events",
             "CRITICAL threshold: {$criticalThreshold} events",
         ];
@@ -188,6 +188,19 @@ class SecurityAlertNotification extends Notification
         if (array_key_exists('new_events_added_during_latest_sync', $this->details)) {
             $lines[] = 'New events added during latest sync: '
                 .(int) $this->details['new_events_added_during_latest_sync'];
+        }
+
+        $outcomes = $this->details['outcomes'] ?? null;
+        if (is_array($outcomes) && $outcomes !== []) {
+            $summary = collect($outcomes)
+                ->filter(static fn (mixed $count): bool => is_int($count) && $count > 0)
+                ->map(static fn (int $count, string $outcome): string => "{$count} {$outcome}")
+                ->implode(', ');
+
+            if ($summary !== '') {
+                $lines[] = "Reported outcomes: {$summary}";
+                $lines[] = 'Reported outcomes describe the action recorded by telemetry, not a confirmed compromise.';
+            }
         }
 
         return $lines;

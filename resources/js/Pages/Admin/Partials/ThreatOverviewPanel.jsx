@@ -37,7 +37,7 @@ const normalizedSeverity = (value) => {
 
 const severityLabel = (value) => formatLabel(normalizedSeverity(value), 'Unclassified');
 
-const eventTypeLabel = (value) => formatLabel(value, 'Generic Threat');
+const eventTypeLabel = (value) => formatLabel(value, 'Unclassified activity');
 
 const metadataText = (metadata) => {
     if (!metadata || typeof metadata !== 'object' || Object.keys(metadata).length === 0) {
@@ -146,7 +146,7 @@ export default function ThreatOverviewPanel({ events = [], onInspectIp }) {
                     <table className="min-w-full divide-y divide-gray-200">
                         <thead className="bg-gray-50">
                             <tr>
-                                {['Threat Type', 'Severity', 'Detected / Source', 'Attacker', 'Application / Target', 'Reason', 'Action Taken', 'Details'].map((heading) => (
+                                {['Threat Type', 'Severity', 'Detected / Source', 'Attacker', 'Application / Target', 'Reason', 'Reported Action', 'Details'].map((heading) => (
                                     <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
                                         {heading}
                                     </th>
@@ -170,7 +170,7 @@ export default function ThreatOverviewPanel({ events = [], onInspectIp }) {
                                             </td>
                                             <td className="whitespace-nowrap px-4 py-4 text-xs text-gray-600">
                                                 {formatDate(event.detected_at)}
-                                                <p className="mt-1 text-purple-700">{event.threat_source || 'Telemetry'}</p>
+                                                <p className="mt-1 text-purple-700">{event.source_label || event.threat_source || 'Source not reported'}</p>
                                             </td>
                                             <td className="px-4 py-4">
                                                 <button
@@ -195,7 +195,7 @@ export default function ThreatOverviewPanel({ events = [], onInspectIp }) {
                                             </td>
                                             <td className="px-4 py-4">
                                                 <span className="inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold uppercase text-emerald-700">
-                                                    {event.action_taken || 'Recorded'}
+                                                    {event.action_label || event.action_taken || 'Outcome not reported'}
                                                 </span>
                                             </td>
                                             <td className="px-4 py-4">
@@ -241,8 +241,8 @@ export default function ThreatOverviewPanel({ events = [], onInspectIp }) {
                             <DetailItem label="Threat Type">{eventTypeLabel(selectedEvent.event_type)}</DetailItem>
                             <DetailItem label="Severity">{severityLabel(selectedEvent.severity)}</DetailItem>
                             <DetailItem label="Reason" className="sm:col-span-2">{selectedEvent.reason || 'No reason provided'}</DetailItem>
-                            <DetailItem label="Action Taken">{selectedEvent.action_taken || 'Recorded'}</DetailItem>
-                            <DetailItem label="Source">{selectedEvent.threat_source || 'Telemetry'}</DetailItem>
+                            <DetailItem label="Reported Action">{selectedEvent.action_label || selectedEvent.action_taken || 'Outcome not reported'}</DetailItem>
+                            <DetailItem label="Source">{selectedEvent.source_label || selectedEvent.threat_source || 'Source not reported'}</DetailItem>
                             <DetailItem label="Attacker IP">
                                 <button
                                     type="button"

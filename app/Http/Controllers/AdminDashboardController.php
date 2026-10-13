@@ -12,6 +12,8 @@ use App\Models\User;
 use App\Models\WhitelistedDomain;
 use App\Services\AccountSetupService;
 use App\Services\AttackerIntelligenceService;
+use App\Services\ThreatClassificationService;
+use App\Support\ThreatEventPresentation;
 use App\Support\ThreatMetadata;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -29,8 +31,11 @@ use Throwable;
 
 class AdminDashboardController extends Controller
 {
-    public function index(Request $request, AttackerIntelligenceService $attackerIntelligenceService)
-    {
+    public function index(
+        Request $request,
+        AttackerIntelligenceService $attackerIntelligenceService,
+        ThreatClassificationService $threatClassificationService
+    ) {
         $user = Auth::user();
 
         // Fetch platform-company users for the Platform Staff view.
@@ -209,7 +214,11 @@ class AdminDashboardController extends Controller
             ->orderByDesc('detected_at')
             ->limit($activeView === 'threats' ? 100 : 5)
             ->get()
-            ->map(function (SecurityThreatLog $event): array {
+            ->map(function (SecurityThreatLog $event) use ($threatClassificationService): array {
+                $derivedClassification = blank($event->event_type)
+                    ? $threatClassificationService->classifyFromPath($event->path_targeted)
+                    : null;
+
                 return [
                     'id' => $event->id,
                     'detected_at' => $event->detected_at?->toIso8601String(),
@@ -217,11 +226,15 @@ class AdminDashboardController extends Controller
                     'attacker_ip' => $event->attacker_ip,
                     'country' => $event->country,
                     'path_targeted' => $event->path_targeted,
-                    'event_type' => $event->event_type,
-                    'severity' => $event->severity,
-                    'reason' => $event->reason,
+                    'event_type' => $event->event_type ?? $derivedClassification['event_type'] ?? null,
+                    'severity' => $event->severity ?? $derivedClassification['severity'] ?? null,
+                    'reason' => $event->reason ?? $derivedClassification['reason'] ?? null,
                     'metadata' => ThreatMetadata::sanitized($event->metadata),
                     'action_taken' => $event->action_taken,
+                    'action_label' => ThreatEventPresentation::actionLabel($event->action_taken),
+                    'action_outcome' => ThreatEventPresentation::actionOutcome($event->action_taken),
+                    'source_label' => ThreatEventPresentation::sourceLabel($event->threat_source),
+                    'source_kind' => ThreatEventPresentation::sourceKind($event->threat_source),
                     'user_agent' => $event->user_agent,
                     'monitored_domain' => $event->monitoredDomain ? [
                         'id' => $event->monitoredDomain->id,

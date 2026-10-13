@@ -37,29 +37,42 @@ class CloudflareIpBlockService
         }
 
         try {
-            $response = Http::withToken($token)
-                ->acceptJson()
-                ->timeout(self::TIMEOUT_SECONDS)
-                ->connectTimeout(self::TIMEOUT_SECONDS)
-                ->get(
-                    "https://api.cloudflare.com/client/v4/zones/{$zoneId}/firewall/access_rules/rules",
-                    ['mode' => 'block']
-                );
+            $rules = [];
+            $page = 1;
+            $totalPages = 1;
 
-            $payload = $response->json();
+            do {
+                $response = Http::withToken($token)
+                    ->acceptJson()
+                    ->timeout(self::TIMEOUT_SECONDS)
+                    ->connectTimeout(self::TIMEOUT_SECONDS)
+                    ->get(
+                        "https://api.cloudflare.com/client/v4/zones/{$zoneId}/firewall/access_rules/rules",
+                        [
+                            'mode' => 'block',
+                            'page' => $page,
+                            'per_page' => 100,
+                        ]
+                    );
 
-            if ($response->failed() || !($payload['success'] ?? false)) {
-                $message = $this->resolveCloudflareErrorMessage($payload);
+                $payload = $response->json();
 
-                return [
-                    'success' => false,
-                    'message' => $message !== '' ? $message : 'Cloudflare rejected the access rule lookup request.',
-                    'rules' => [],
-                ];
-            }
+                if ($response->failed() || ! ($payload['success'] ?? false)) {
+                    $message = $this->resolveCloudflareErrorMessage($payload);
 
-            /** @var list<array<string, mixed>> $rules */
-            $rules = is_array($payload['result'] ?? null) ? $payload['result'] : [];
+                    return [
+                        'success' => false,
+                        'message' => $message !== '' ? $message : 'Cloudflare rejected the access rule lookup request.',
+                        'rules' => [],
+                    ];
+                }
+
+                /** @var list<array<string, mixed>> $pageRules */
+                $pageRules = is_array($payload['result'] ?? null) ? $payload['result'] : [];
+                $rules = [...$rules, ...$pageRules];
+                $totalPages = max(1, (int) data_get($payload, 'result_info.total_pages', 1));
+                $page++;
+            } while ($page <= $totalPages);
 
             return [
                 'success' => true,
@@ -72,6 +85,7 @@ class CloudflareIpBlockService
                         'created_on' => $this->nullableString(data_get($rule, 'created_on')),
                     ])
                     ->filter(fn (array $rule): bool => $rule['id'] !== '' && $rule['ip_address'] !== '')
+                    ->unique('id')
                     ->values()
                     ->all(),
             ];
@@ -84,7 +98,7 @@ class CloudflareIpBlockService
         } catch (Throwable $e) {
             return [
                 'success' => false,
-                'message' => 'Unexpected Cloudflare error: ' . $e->getMessage(),
+                'message' => 'Unexpected Cloudflare error: '.$e->getMessage(),
                 'rules' => [],
             ];
         }
@@ -124,7 +138,7 @@ class CloudflareIpBlockService
 
             $payload = $response->json();
 
-            if ($response->failed() || !($payload['success'] ?? false)) {
+            if ($response->failed() || ! ($payload['success'] ?? false)) {
                 $message = $this->resolveCloudflareErrorMessage($payload);
 
                 return [
@@ -148,7 +162,7 @@ class CloudflareIpBlockService
         } catch (Throwable $e) {
             return [
                 'success' => false,
-                'message' => 'Unexpected Cloudflare error: ' . $e->getMessage(),
+                'message' => 'Unexpected Cloudflare error: '.$e->getMessage(),
                 'rule_id' => null,
             ];
         }
@@ -177,7 +191,7 @@ class CloudflareIpBlockService
 
             $payload = $response->json();
 
-            if ($response->failed() || !($payload['success'] ?? false)) {
+            if ($response->failed() || ! ($payload['success'] ?? false)) {
                 $message = $this->resolveCloudflareErrorMessage($payload);
 
                 return [
@@ -198,19 +212,19 @@ class CloudflareIpBlockService
         } catch (Throwable $e) {
             return [
                 'success' => false,
-                'message' => 'Unexpected Cloudflare error: ' . $e->getMessage(),
+                'message' => 'Unexpected Cloudflare error: '.$e->getMessage(),
             ];
         }
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function resolveCloudflareErrorMessage(array $payload): string
     {
         $errors = $payload['errors'] ?? null;
 
-        if (!is_array($errors)) {
+        if (! is_array($errors)) {
             return '';
         }
 
@@ -222,7 +236,7 @@ class CloudflareIpBlockService
 
     private function nullableString(mixed $value): ?string
     {
-        if (!is_string($value)) {
+        if (! is_string($value)) {
             return null;
         }
 

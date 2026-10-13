@@ -19,15 +19,19 @@ use RuntimeException;
 class CloudflareThreatService
 {
     private const API_ENDPOINT = 'https://api.cloudflare.com/client/v4/graphql';
+
     private const TIMEOUT_SECONDS = 5;
+
     private const EVENT_LIMIT = 100;
+
     private const MIDDLEWARE_LOOKBACK_HOURS = 24;
+
     private const BLOCKED_IP_CACHE_TTL_SECONDS = 600;
 
     public function __construct(
-        private readonly AttackSpikeAlertService $attackSpikeAlertService
-    ) {
-    }
+        private readonly AttackSpikeAlertService $attackSpikeAlertService,
+        private readonly ThreatClassificationService $threatClassificationService,
+    ) {}
 
     /**
      * @return array{domains_processed: int, events_synced: int, failed: int, skipped: int}
@@ -127,7 +131,7 @@ class CloudflareThreatService
 
         $payload = $response->json();
 
-        if (!empty($payload['errors']) && is_array($payload['errors'])) {
+        if (! empty($payload['errors']) && is_array($payload['errors'])) {
             $errorMessage = collect($payload['errors'])
                 ->map(static fn (mixed $error): string => (string) data_get($error, 'message', 'Unknown Cloudflare GraphQL error'))
                 ->implode('; ');
@@ -166,7 +170,7 @@ GRAPHQL;
     }
 
     /**
-     * @param \Illuminate\Support\Collection<int, array<string, mixed>> $events
+     * @param  \Illuminate\Support\Collection<int, array<string, mixed>>  $events
      */
     /**
      * @return array{events_synced: int, new_events_count: int}
@@ -180,7 +184,7 @@ GRAPHQL;
             $attackerIp = trim((string) ($event['clientIP'] ?? ''));
             $detectedAtRaw = $event['datetime'] ?? null;
 
-            if ($attackerIp === '' || !is_string($detectedAtRaw) || trim($detectedAtRaw) === '') {
+            if ($attackerIp === '' || ! is_string($detectedAtRaw) || trim($detectedAtRaw) === '') {
                 continue;
             }
 
@@ -189,6 +193,8 @@ GRAPHQL;
             $pathTargeted = is_string($pathTargeted) && trim($pathTargeted) !== ''
                 ? trim($pathTargeted)
                 : null;
+
+            $classification = $this->threatClassificationService->classifyFromPath($pathTargeted);
 
             $threatLog = $domain->securityThreatLogs()->updateOrCreate(
                 [
@@ -203,6 +209,20 @@ GRAPHQL;
                     'threat_source' => $this->nullableString($event['source'] ?? null),
                 ]
             );
+
+            if ($classification !== null) {
+                $classificationUpdates = [];
+
+                foreach ($classification as $attribute => $value) {
+                    if (blank($threatLog->getAttribute($attribute))) {
+                        $classificationUpdates[$attribute] = $value;
+                    }
+                }
+
+                if ($classificationUpdates !== []) {
+                    $threatLog->forceFill($classificationUpdates)->save();
+                }
+            }
 
             $synced++;
 
@@ -314,7 +334,7 @@ GRAPHQL;
 
     private function nullableString(mixed $value): ?string
     {
-        if (!is_string($value)) {
+        if (! is_string($value)) {
             return null;
         }
 
@@ -322,5 +342,4 @@ GRAPHQL;
 
         return $normalized !== '' ? $normalized : null;
     }
-
 }

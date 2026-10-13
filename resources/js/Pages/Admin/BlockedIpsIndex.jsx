@@ -4,6 +4,7 @@ import {
     ArrowLeft,
     CheckCircle2,
     Globe2,
+    History,
     LoaderCircle,
     ShieldAlert,
     Undo2,
@@ -24,9 +25,10 @@ const formatBlockedAt = (timestamp) => {
     return date.toLocaleString();
 };
 
-export default function BlockedIpsIndex({ auth, blockedIps = [] }) {
+export default function BlockedIpsIndex({ auth, blockedIps = [], blockedIpActivity = [] }) {
     const { flash } = usePage().props;
     const [unblockingId, setUnblockingId] = useState(null);
+    const [activeView, setActiveView] = useState('blocks');
 
     const globalBlockedCount = blockedIps.filter((blockedIp) => blockedIp.is_global).length;
     const domainBlockedCount = blockedIps.length - globalBlockedCount;
@@ -51,9 +53,9 @@ export default function BlockedIpsIndex({ auth, blockedIps = [] }) {
     return (
         <AuthenticatedLayout
             user={auth.user}
-            header={<h2 className="text-xl font-semibold leading-tight text-gray-800">Blocked IPs</h2>}
+            header={<h2 className="text-xl font-semibold leading-tight text-gray-800">Tier 3 IP Block Management</h2>}
         >
-            <Head title="Blocked IPs" />
+            <Head title="Tier 3 IP Block Management" />
 
             <div className="py-10">
                 <div className="mx-auto w-full max-w-7xl space-y-6 px-4 sm:px-6 lg:px-8">
@@ -66,10 +68,10 @@ export default function BlockedIpsIndex({ auth, blockedIps = [] }) {
                                 </div>
                                 <div>
                                     <h1 className="text-3xl font-black tracking-tight text-gray-900">
-                                        Blocked IPs Management
+                                        Tier 3 IP Block Management
                                     </h1>
                                     <p className="mt-2 max-w-2xl text-sm leading-6 text-gray-600">
-                                        Review auto-banned and manually blocked addresses, then remove active blocks when traffic is no longer hostile.
+                                        Review Tier 3 auto-ban and block-list entries. Tier 3 clients retrieve this list and enforce it locally.
                                     </p>
                                 </div>
                             </div>
@@ -113,6 +115,28 @@ export default function BlockedIpsIndex({ auth, blockedIps = [] }) {
                         </div>
                     )}
 
+                    <div className="flex flex-wrap gap-2" role="tablist" aria-label="Tier 3 IP block views">
+                        <button
+                            type="button"
+                            role="tab"
+                            aria-selected={activeView === 'blocks'}
+                            onClick={() => setActiveView('blocks')}
+                            className={`rounded-full border px-4 py-2 text-sm font-semibold ${activeView === 'blocks' ? 'border-gray-900 bg-gray-900 text-white' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'}`}
+                        >
+                            Block List
+                        </button>
+                        <button
+                            type="button"
+                            role="tab"
+                            aria-selected={activeView === 'activity'}
+                            onClick={() => setActiveView('activity')}
+                            className={`rounded-full border px-4 py-2 text-sm font-semibold ${activeView === 'activity' ? 'border-gray-900 bg-gray-900 text-white' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'}`}
+                        >
+                            Blocked IP Activity
+                        </button>
+                    </div>
+
+                    {activeView === 'blocks' ? (
                     <section className="rounded-3xl border border-gray-200 bg-white shadow-sm">
                         {blockedIps.length > 0 ? (
                             <div className="overflow-x-auto">
@@ -196,6 +220,66 @@ export default function BlockedIpsIndex({ auth, blockedIps = [] }) {
                             </div>
                         )}
                     </section>
+                    ) : (
+                        <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
+                            <div className="flex items-start gap-3">
+                                <div className="rounded-xl bg-amber-50 p-2 text-amber-700">
+                                    <History className="h-5 w-5" />
+                                </div>
+                                <div>
+                                    <h2 className="text-xl font-bold text-gray-900">Blocked IP Activity</h2>
+                                    <p className="mt-1 text-sm leading-6 text-gray-600">
+                                        Attempts observed after a Tier 3 block-list entry was created. Telemetry records the reported outcome; an attempted request does not indicate that access succeeded.
+                                    </p>
+                                </div>
+                            </div>
+
+                            {blockedIpActivity.length > 0 ? (
+                                <div className="mt-6 space-y-4">
+                                    {blockedIpActivity.map((activity) => (
+                                        <article key={activity.blocked_ip_id} className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                                            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                                <div>
+                                                    <p className="font-mono text-base font-bold text-gray-900">{activity.ip}</p>
+                                                    <p className="mt-1 text-sm text-gray-600">
+                                                        {activity.is_global ? 'Global Tier 3 list entry' : `Tier 3 entry for ${activity.target_domain || 'an unknown domain'}`}
+                                                    </p>
+                                                </div>
+                                                <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
+                                                    {activity.attempt_count} post-block attempt{activity.attempt_count === 1 ? '' : 's'} observed
+                                                </span>
+                                            </div>
+
+                                            {activity.latest_attempt ? (
+                                                <div className="mt-4 grid gap-3 rounded-xl border border-gray-200 bg-white p-3 sm:grid-cols-2 lg:grid-cols-4">
+                                                    <div><p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Latest attempt</p><p className="mt-1 text-sm font-semibold text-gray-900">{formatBlockedAt(activity.latest_attempt.detected_at)}</p></div>
+                                                    <div><p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Reported outcome</p><p className="mt-1 text-sm font-semibold text-gray-900">{activity.latest_attempt.action_label}</p></div>
+                                                    <div><p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Source</p><p className="mt-1 text-sm font-semibold text-gray-900">{activity.latest_attempt.source_label}</p></div>
+                                                    <div><p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Target</p><p className="mt-1 break-all font-mono text-sm font-semibold text-gray-900">{activity.latest_attempt.path_targeted || '/'}</p></div>
+                                                </div>
+                                            ) : null}
+
+                                            <ol className="mt-4 divide-y divide-gray-200 overflow-hidden rounded-xl border border-gray-200 bg-white">
+                                                {activity.history.map((event) => (
+                                                    <li key={event.id} className="grid gap-2 px-3 py-3 text-sm sm:grid-cols-[minmax(10rem,auto)_1fr_auto] sm:items-center">
+                                                        <span className="text-gray-500">{formatBlockedAt(event.detected_at)}</span>
+                                                        <span className="min-w-0"><span className="font-semibold text-gray-900">{event.event_type || 'Unclassified activity'}</span><span className="ml-2 break-all font-mono text-xs text-gray-500">{event.path_targeted || '/'}</span></span>
+                                                        <span className="text-xs font-semibold text-gray-700">{event.action_label} · {event.source_label}</span>
+                                                    </li>
+                                                ))}
+                                            </ol>
+                                        </article>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="px-6 py-16 text-center">
+                                    <History className="mx-auto h-12 w-12 text-gray-300" />
+                                    <h3 className="mt-4 text-lg font-bold text-gray-900">No post-block activity observed</h3>
+                                    <p className="mt-2 text-sm text-gray-500">No telemetry events have been recorded after the current Tier 3 block-list entries were created.</p>
+                                </div>
+                            )}
+                        </section>
+                    )}
                 </div>
             </div>
         </AuthenticatedLayout>

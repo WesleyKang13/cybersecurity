@@ -15,22 +15,30 @@ const formatLabel = (value) => String(value || 'unclassified')
     .join(' ');
 
 const BLOCK_STATUSES = {
-    global: {
-        label: 'Globally blocked',
+    cloudflare_ip_access_rule_active: {
+        label: 'Cloudflare IP Access Rule active',
         classes: 'border-red-200 bg-red-50 text-red-800',
     },
-    domain_specific: {
-        label: 'Domain-specific block',
+    tier3_global_block_list_entry: {
+        label: 'Tier 3 global block-list entry',
         classes: 'border-amber-200 bg-amber-50 text-amber-800',
     },
-    not_blocked: {
-        label: 'Not blocked',
+    tier3_domain_block_list_entry: {
+        label: 'Tier 3 domain block-list entry',
+        classes: 'border-amber-200 bg-amber-50 text-amber-800',
+    },
+    unknown: {
+        label: 'Cloudflare status not synced',
+        classes: 'border-gray-300 bg-gray-100 text-gray-700',
+    },
+    no_known_block: {
+        label: 'No known block',
         classes: 'border-emerald-200 bg-emerald-50 text-emerald-800',
     },
 };
 
 function BlockStatusBadge({ classification }) {
-    const status = BLOCK_STATUSES[classification] || BLOCK_STATUSES.not_blocked;
+    const status = BLOCK_STATUSES[classification] || BLOCK_STATUSES.unknown;
 
     return (
         <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${status.classes}`}>
@@ -201,14 +209,30 @@ export default function GlobalIntelligencePanel({ topAttackers = [] }) {
                             <IntelligenceField label="Mobile network">{intelligence.mobile ? 'Yes' : 'No'}</IntelligenceField>
                         </dl>
 
-                        {blockStatus?.domain_specific_blocks?.length > 0 ? (
-                            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                                <p className="font-semibold">Blocked for specific domains</p>
-                                <p className="mt-1">
-                                    {blockStatus.domain_specific_blocks.map((block) => block.domain).join(', ')}
-                                </p>
+                        <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                            <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-950">
+                                <p className="font-semibold">Tier 2 · Cloudflare</p>
+                                {blockStatus?.tier_2?.status === 'active' ? (
+                                    <p className="mt-1">Confirmed active IP Access Rule for {blockStatus.tier_2.active_ip_access_rules.map((rule) => rule.domain).join(', ')}.</p>
+                                ) : blockStatus?.tier_2?.status === 'not_active' ? (
+                                    <p className="mt-1">No active IP Access Rule was found in the {blockStatus.tier_2.checked_domains?.length || 0} synced Cloudflare zone(s).</p>
+                                ) : blockStatus?.tier_2?.status === 'unknown' ? (
+                                    <p className="mt-1">Unknown / not synced. Cloudflare rule status could not be verified for {blockStatus.tier_2.unavailable_domains?.map((domain) => domain.domain).join(', ') || 'one or more configured zones'}.</p>
+                                ) : (
+                                    <p className="mt-1">No Cloudflare-backed domain associated with this IP’s telemetry is available to verify.</p>
+                                )}
                             </div>
-                        ) : null}
+                            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                                <p className="font-semibold">Tier 3 · local client enforcement</p>
+                                {blockStatus?.tier_3?.global_block_list_entry ? (
+                                    <p className="mt-1">Published on the Tier 3 global block list. {blockStatus.tier_3.enforcement_note}</p>
+                                ) : blockStatus?.tier_3?.domain_block_list_entries?.length > 0 ? (
+                                    <p className="mt-1">Published for {blockStatus.tier_3.domain_block_list_entries.map((block) => block.domain).join(', ')}. {blockStatus.tier_3.enforcement_note}</p>
+                                ) : (
+                                    <p className="mt-1">No Tier 3 block-list entry is recorded for this IP.</p>
+                                )}
+                            </div>
+                        </div>
                     </section>
 
                     <section className="space-y-4">
@@ -249,6 +273,23 @@ export default function GlobalIntelligencePanel({ topAttackers = [] }) {
                                 valueFormatter={(value) => value}
                             />
                         </div>
+
+                        <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+                            <h5 className="border-b border-gray-100 bg-gray-50 px-4 py-3 text-sm font-semibold text-gray-900">Recent attacker activity</h5>
+                            {observations?.recent_activity?.length > 0 ? (
+                                <ol className="divide-y divide-gray-100">
+                                    {observations.recent_activity.map((event) => (
+                                        <li key={event.id} className="grid gap-2 px-4 py-3 text-sm sm:grid-cols-[minmax(9rem,auto)_1fr_auto] sm:items-center">
+                                            <span className="text-gray-500">{formatDate(event.detected_at)}</span>
+                                            <span className="min-w-0"><span className="font-semibold text-gray-900">{formatLabel(event.event_type || 'unclassified')}</span><span className="ml-2 break-all font-mono text-xs text-gray-500">{event.path_targeted || '/'}</span><span className="mt-1 block text-xs text-gray-500">{event.domain} · {event.source_label}</span></span>
+                                            <span className="text-xs font-semibold text-gray-700">{event.action_label}</span>
+                                        </li>
+                                    ))}
+                                </ol>
+                            ) : (
+                                <p className="px-4 py-5 text-sm text-gray-500">No attacker activity has been observed yet.</p>
+                            )}
+                        </section>
                     </section>
                 </div>
             ) : null}
@@ -259,13 +300,13 @@ export default function GlobalIntelligencePanel({ topAttackers = [] }) {
                         <ShieldAlert className="mr-2 h-5 w-5 text-red-600" />
                         Top Attackers
                     </h4>
-                    <p className="mt-1 text-sm text-gray-500">Highest-volume attacker identities observed across platform telemetry.</p>
+                    <p className="mt-1 text-sm text-gray-500">Highest-volume attacker identities observed across platform telemetry. Inspect an IP to sync its Cloudflare IP Access Rule status.</p>
                 </div>
                 <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-gray-200">
                         <thead className="bg-white">
                             <tr>
-                                {['Attacker IP', 'Country', 'Total events', 'Applications targeted', 'Most recent event', 'Blocked status'].map((heading) => (
+                                {['Attacker IP', 'Country', 'Total events', 'Applications targeted', 'Most recent event', 'Tier 3 list status'].map((heading) => (
                                     <th key={heading} className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
                                         {heading}
                                     </th>
@@ -288,7 +329,7 @@ export default function GlobalIntelligencePanel({ topAttackers = [] }) {
                                     <td className="px-5 py-4 text-sm font-semibold tabular-nums text-gray-900">{attacker.total_events}</td>
                                     <td className="px-5 py-4 text-sm tabular-nums text-gray-600">{attacker.applications_targeted}</td>
                                     <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-600">{formatDate(attacker.most_recent_event)}</td>
-                                    <td className="px-5 py-4"><BlockStatusBadge classification={attacker.blocked_status} /></td>
+                                    <td className="px-5 py-4"><BlockStatusBadge classification={attacker.tier_3_status === 'global_block_list_entry' ? 'tier3_global_block_list_entry' : attacker.tier_3_status === 'domain_block_list_entry' ? 'tier3_domain_block_list_entry' : 'no_known_block'} /></td>
                                 </tr>
                             )) : (
                                 <tr>

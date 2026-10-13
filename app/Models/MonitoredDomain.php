@@ -28,6 +28,12 @@ class MonitoredDomain extends Model
         'cloudflare_zone_id',
         'auto_ban_threshold',
         'last_checked_at',
+        'universal_scan_status',
+        'universal_scan_requested_at',
+        'universal_scan_started_at',
+        'universal_scan_completed_at',
+        'universal_scan_failed_at',
+        'universal_scan_error',
         'ssl_certificate_info',
     ];
 
@@ -50,6 +56,10 @@ class MonitoredDomain extends Model
             'is_owned' => 'boolean',
             'auto_ban_threshold' => 'integer',
             'last_checked_at' => 'datetime',
+            'universal_scan_requested_at' => 'datetime',
+            'universal_scan_started_at' => 'datetime',
+            'universal_scan_completed_at' => 'datetime',
+            'universal_scan_failed_at' => 'datetime',
             'ssl_certificate_info' => 'array',
         ];
     }

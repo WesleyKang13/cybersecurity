@@ -46,7 +46,15 @@ class GlobalIntelligencePresentationTest extends TestCase
 
     public function test_block_states_and_legacy_breakdowns_are_present(): void
     {
-        foreach (['Globally blocked', 'Domain-specific block', 'Not blocked', 'unclassified'] as $label) {
+        foreach ([
+            'Cloudflare IP Access Rule active',
+            'Tier 3 global block-list entry',
+            'Tier 3 domain block-list entry',
+            'Cloudflare status not synced',
+            'Unknown / not synced',
+            'Recent attacker activity',
+            'unclassified',
+        ] as $label) {
             $this->assertStringContainsString($label, $this->component);
         }
     }
