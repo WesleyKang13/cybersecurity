@@ -195,7 +195,7 @@ final class AttackSpikeAlertService
     }
 
     /**
-     * @param  array{delivered: list<string>, failed: list<string>}  $delivery
+     * @param  array{delivered: list<string>, failed: list<string>, configured_channels?: int}  $delivery
      */
     private function recordDeliveryAttempt(AttackSpikeAlert $alert, string $lockToken, array $delivery): void
     {
@@ -222,11 +222,29 @@ final class AttackSpikeAlertService
                 'last_attempt_at' => $now,
             ];
 
-            if ($delivery['failed'] === []) {
+            $hasConfiguredChannels = (int) ($delivery['configured_channels'] ?? (
+                count($delivery['delivered']) + count($delivery['failed'])
+            )) > 0;
+
+            if ($delivery['failed'] === [] && $hasConfiguredChannels) {
                 $attributes['status'] = AttackSpikeAlert::STATUS_DELIVERED;
                 $attributes['delivered_at'] = $now;
 
                 Cache::put($this->cooldownCacheKey($lockedAlert), 'sent', self::COOLDOWN_SECONDS);
+
+                if ($lockedAlert->severity === 'CRITICAL') {
+                    AttackSpikeAlert::query()
+                        ->where('company_id', $lockedAlert->company_id)
+                        ->where('monitored_domain_id', $lockedAlert->monitored_domain_id)
+                        ->where('severity', 'HIGH')
+                        ->where('status', AttackSpikeAlert::STATUS_PENDING)
+                        ->update([
+                            'status' => AttackSpikeAlert::STATUS_SUPERSEDED,
+                            'delivery_lock_token' => null,
+                            'delivery_lock_expires_at' => null,
+                            'updated_at' => $now,
+                        ]);
+                }
             }
 
             $lockedAlert->forceFill($attributes)->save();

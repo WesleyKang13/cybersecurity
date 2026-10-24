@@ -28,6 +28,9 @@ class SecurityOperationsPresentationTest extends TestCase
             'Scanning…',
             "route('dns-security.scan-statuses')",
             'pollScanStatuses',
+            'SCAN_STATUS_BATCH_SIZE = 100',
+            'Promise.all(batches.map',
+            '5 * 60 * 1000',
             'universalScan.error',
         ] as $label) {
             $this->assertStringContainsString($label, $component);

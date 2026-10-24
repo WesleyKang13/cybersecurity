@@ -24,7 +24,7 @@ import {
     ShieldCheck,
     Trash2,
 } from 'lucide-react';
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 
 const STATUS_STYLES = {
     Secure: 'border-emerald-200 bg-emerald-100 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-200',
@@ -49,6 +49,15 @@ const STATUS_BADGE_STYLES = {
 
 const ROWS_PER_PAGE_OPTIONS = [10, 25, 50];
 const THREAT_ROWS_PER_PAGE_OPTIONS = [20, 50, 100, 'all'];
+const SCAN_STATUS_BATCH_SIZE = 100;
+const DASHBOARD_REFRESH_PROPS = [
+    'domains',
+    'recentLogs',
+    'recentThreatLogs',
+    'activeAccessRules',
+    'threatAnalytics',
+    'last_synced_at',
+];
 
 const WEB_HEADER_GUIDANCE = {
     'Content-Security-Policy': 'Limits which scripts, frames, and assets the browser is allowed to load.',
@@ -241,6 +250,22 @@ export default function DnsSecurityIndex({
     const terminalScanRefreshes = useRef(new Set());
     const dashboardRefreshInFlight = useRef(false);
 
+    const refreshDashboardData = useCallback(() => {
+        if (dashboardRefreshInFlight.current) {
+            return;
+        }
+
+        dashboardRefreshInFlight.current = true;
+        router.reload({
+            only: DASHBOARD_REFRESH_PROPS,
+            preserveScroll: true,
+            preserveState: true,
+            onFinish: () => {
+                dashboardRefreshInFlight.current = false;
+            },
+        });
+    }, []);
+
     const addDomainForm = useForm({
         domain: '',
         infrastructure_type: 'universal',
@@ -387,22 +412,41 @@ export default function DnsSecurityIndex({
             pollInFlight = true;
 
             try {
-                const query = new URLSearchParams();
-                pendingUniversalScanDomainIds.forEach((domainId) => query.append('domain_ids[]', domainId));
-                const response = await fetch(`${route('dns-security.scan-statuses')}?${query.toString()}`, {
-                    headers: {
-                        Accept: 'application/json',
-                        'X-Requested-With': 'XMLHttpRequest',
-                    },
-                    credentials: 'same-origin',
-                });
+                const batches = [];
 
-                if (!response.ok || cancelled) {
+                for (let index = 0; index < pendingUniversalScanDomainIds.length; index += SCAN_STATUS_BATCH_SIZE) {
+                    batches.push(pendingUniversalScanDomainIds.slice(index, index + SCAN_STATUS_BATCH_SIZE));
+                }
+
+                const scanBatches = await Promise.all(batches.map(async (domainIds) => {
+                    try {
+                        const query = new URLSearchParams();
+                        domainIds.forEach((domainId) => query.append('domain_ids[]', domainId));
+                        const response = await fetch(`${route('dns-security.scan-statuses')}?${query.toString()}`, {
+                            headers: {
+                                Accept: 'application/json',
+                                'X-Requested-With': 'XMLHttpRequest',
+                            },
+                            credentials: 'same-origin',
+                        });
+
+                        if (!response.ok) {
+                            return [];
+                        }
+
+                        const payload = await response.json();
+
+                        return Array.isArray(payload.scans) ? payload.scans : [];
+                    } catch (error) {
+                        return [];
+                    }
+                }));
+
+                if (cancelled) {
                     return;
                 }
 
-                const payload = await response.json();
-                const scans = Array.isArray(payload.scans) ? payload.scans : [];
+                const scans = scanBatches.flat();
                 let shouldRefreshDashboard = false;
                 const pendingIds = new Set(pendingUniversalScanDomainIds);
 
@@ -424,16 +468,8 @@ export default function DnsSecurityIndex({
                     ...Object.fromEntries(scans.map((scan) => [scan.id, scan])),
                 }));
 
-                if (shouldRefreshDashboard && !dashboardRefreshInFlight.current) {
-                    dashboardRefreshInFlight.current = true;
-                    router.reload({
-                        only: ['domains', 'recentLogs', 'recentThreatLogs', 'activeAccessRules', 'threatAnalytics', 'last_synced_at'],
-                        preserveScroll: true,
-                        preserveState: true,
-                        onFinish: () => {
-                            dashboardRefreshInFlight.current = false;
-                        },
-                    });
+                if (shouldRefreshDashboard) {
+                    refreshDashboardData();
                 }
             } finally {
                 pollInFlight = false;
@@ -447,7 +483,13 @@ export default function DnsSecurityIndex({
             cancelled = true;
             window.clearInterval(intervalId);
         };
-    }, [pendingUniversalScanDomainIds.join(',')]);
+    }, [pendingUniversalScanDomainIds.join(','), refreshDashboardData]);
+
+    useEffect(() => {
+        const intervalId = window.setInterval(refreshDashboardData, 5 * 60 * 1000);
+
+        return () => window.clearInterval(intervalId);
+    }, [refreshDashboardData]);
 
     useEffect(() => {
         const intervalId = window.setInterval(() => {

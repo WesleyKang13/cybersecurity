@@ -33,7 +33,7 @@ class SecurityAlertDispatcher
      * their current best-effort delivery behavior.
      *
      * @param  list<string>  $alreadyDeliveredChannels
-     * @return array{delivered: list<string>, failed: list<string>}
+     * @return array{delivered: list<string>, failed: list<string>, configured_channels: int}
      */
     public function dispatchAttackSpike(
         Company $company,
@@ -41,15 +41,17 @@ class SecurityAlertDispatcher
         array $alreadyDeliveredChannels = []
     ): array {
         if ($company->status !== Company::STATUS_ACTIVE) {
-            return ['delivered' => [], 'failed' => []];
+            return ['delivered' => [], 'failed' => [], 'configured_channels' => 0];
         }
 
         $delivered = array_fill_keys($alreadyDeliveredChannels, true);
         $newlyDelivered = [];
         $failed = [];
+        $configuredChannels = 0;
 
         foreach ($this->eligibleAlertUsers($company) as $user) {
             foreach ($this->configuredChannels($user) as $channel) {
+                $configuredChannels++;
                 $deliveryKey = "{$user->id}:{$channel}";
 
                 if (isset($delivered[$deliveryKey])) {
@@ -68,6 +70,7 @@ class SecurityAlertDispatcher
         return [
             'delivered' => array_values(array_unique($newlyDelivered)),
             'failed' => array_values(array_unique($failed)),
+            'configured_channels' => $configuredChannels,
         ];
     }
 

@@ -314,6 +314,28 @@ class SecurityAlertHardeningTest extends TestCase
         );
     }
 
+    public function test_attack_spike_without_configured_channels_stays_pending_until_delivery_is_configured(): void
+    {
+        $company = $this->createCompany(Company::TYPE_CLIENT);
+        $domain = $this->createDomain($company, 'pending-until-configured.example.test');
+        $this->createThreatEvents($domain, 10, $this->now->subMinutes(5));
+
+        $service = app(AttackSpikeAlertService::class);
+        $service->evaluate($domain, 10);
+
+        $alert = AttackSpikeAlert::query()->sole();
+        $this->assertSame(AttackSpikeAlert::STATUS_PENDING, $alert->status);
+        $this->assertNull($alert->delivered_at);
+        $this->assertFalse(Cache::has("security_alert:attack_spike:{$company->id}:{$domain->id}:HIGH"));
+
+        $recipient = $this->createAlertUser($company, User::ROLE_CLIENT_ADMIN);
+        $service->evaluate($domain, 0);
+
+        $alert->refresh();
+        $this->assertSame(AttackSpikeAlert::STATUS_DELIVERED, $alert->status);
+        Notification::assertSentTo($recipient, SecurityAlertNotification::class);
+    }
+
     public function test_failed_attack_spike_delivery_stays_pending_and_retries_without_resending_completed_channels(): void
     {
         $company = $this->createCompany(Company::TYPE_CLIENT);
@@ -390,7 +412,7 @@ class SecurityAlertHardeningTest extends TestCase
         $this->assertSame(AttackSpikeAlert::STATUS_PENDING, AttackSpikeAlert::query()->sole()->status);
     }
 
-    public function test_pending_high_delivery_does_not_block_a_new_critical_escalation(): void
+    public function test_successful_critical_delivery_supersedes_a_pending_high_alert(): void
     {
         $company = $this->createCompany(Company::TYPE_CLIENT);
         $domain = $this->createDomain($company, 'escalation-after-failure.example.test');
@@ -415,13 +437,18 @@ class SecurityAlertHardeningTest extends TestCase
         $this->assertDatabaseHas('attack_spike_alerts', [
             'monitored_domain_id' => $domain->id,
             'severity' => 'HIGH',
-            'status' => AttackSpikeAlert::STATUS_PENDING,
+            'status' => AttackSpikeAlert::STATUS_SUPERSEDED,
         ]);
         $this->assertDatabaseHas('attack_spike_alerts', [
             'monitored_domain_id' => $domain->id,
             'severity' => 'CRITICAL',
             'status' => AttackSpikeAlert::STATUS_DELIVERED,
         ]);
+
+        SecurityThreatLog::query()
+            ->where('monitored_domain_id', $domain->id)
+            ->update(['detected_at' => $this->now->subMinutes(11)]);
+        $service->evaluate($domain, 0);
     }
 
     private function genericNotification(string $domain = 'example.test'): SecurityAlertNotification

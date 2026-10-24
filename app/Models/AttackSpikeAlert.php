@@ -13,6 +13,8 @@ class AttackSpikeAlert extends Model
 
     public const STATUS_DELIVERED = 'delivered';
 
+    public const STATUS_SUPERSEDED = 'superseded';
+
     /**
      * @var list<string>
      */
