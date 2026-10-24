@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Models\AttackSpikeAlert;
 use App\Models\Company;
 use App\Models\MonitoredDomain;
 use App\Models\SecurityThreatLog;
@@ -313,21 +314,114 @@ class SecurityAlertHardeningTest extends TestCase
         );
     }
 
-    public function test_delivery_failure_is_logged_and_does_not_bypass_the_cooldown(): void
+    public function test_failed_attack_spike_delivery_stays_pending_and_retries_without_resending_completed_channels(): void
     {
         $company = $this->createCompany(Company::TYPE_CLIENT);
+        $firstUser = $this->createAlertUser($company, User::ROLE_CLIENT_ADMIN);
+        $secondUser = $this->createAlertUser($company, User::ROLE_CLIENT_USER);
         $domain = $this->createDomain($company, 'delivery-failure.example.test');
         $this->createThreatEvents($domain, 10, $this->now->subMinutes(5));
 
-        $this->mock(SecurityAlertDispatcher::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('dispatch')->once()->andThrow(new \RuntimeException('transport unavailable'));
+        $this->mock(SecurityAlertDispatcher::class, function (MockInterface $mock) use ($firstUser, $secondUser): void {
+            $mock->shouldReceive('dispatchAttackSpike')
+                ->once()
+                ->withArgs(fn (Company $company, SecurityAlertNotification $notification, array $delivered): bool => $delivered === [])
+                ->andReturn([
+                    'delivered' => ["{$firstUser->id}:email"],
+                    'failed' => ["{$secondUser->id}:email"],
+                ]);
+            $mock->shouldReceive('dispatchAttackSpike')
+                ->once()
+                ->withArgs(fn (Company $company, SecurityAlertNotification $notification, array $delivered): bool => $delivered === ["{$firstUser->id}:email"])
+                ->andReturn([
+                    'delivered' => ["{$secondUser->id}:email"],
+                    'failed' => [],
+                ]);
         });
 
         $service = app(AttackSpikeAlertService::class);
         $service->evaluate($domain, 10);
-        $service->evaluate($domain, 10);
 
+        $alert = AttackSpikeAlert::query()->sole();
+        $this->assertSame(AttackSpikeAlert::STATUS_PENDING, $alert->status);
+        $this->assertSame(["{$firstUser->id}:email"], $alert->delivered_channels);
+        $this->assertFalse(Cache::has("security_alert:attack_spike:{$company->id}:{$domain->id}:HIGH"));
+
+        SecurityThreatLog::query()
+            ->where('monitored_domain_id', $domain->id)
+            ->update(['detected_at' => $this->now->subMinutes(11)]);
+        $service->evaluate($domain, 0);
+
+        $alert->refresh();
+        $this->assertSame(AttackSpikeAlert::STATUS_DELIVERED, $alert->status);
+        $this->assertSame(
+            ["{$firstUser->id}:email", "{$secondUser->id}:email"],
+            $alert->delivered_channels
+        );
         $this->assertTrue(Cache::has("security_alert:attack_spike:{$company->id}:{$domain->id}:HIGH"));
+    }
+
+    public function test_claimed_pending_alert_is_not_delivered_by_a_concurrent_evaluation(): void
+    {
+        $company = $this->createCompany(Company::TYPE_CLIENT);
+        $domain = $this->createDomain($company, 'concurrent-delivery.example.test');
+        AttackSpikeAlert::create([
+            'company_id' => $company->id,
+            'monitored_domain_id' => $domain->id,
+            'severity' => 'HIGH',
+            'status' => AttackSpikeAlert::STATUS_PENDING,
+            'detected_at' => $this->now,
+            'events_in_window' => 10,
+            'monitoring_window_minutes' => 10,
+            'high_threshold' => 10,
+            'critical_threshold' => 25,
+            'outcomes' => [],
+            'delivered_channels' => [],
+            'delivery_lock_token' => 'another-evaluator',
+            'delivery_lock_expires_at' => $this->now->addMinute(),
+        ]);
+
+        $this->mock(SecurityAlertDispatcher::class, function (MockInterface $mock): void {
+            $mock->shouldNotReceive('dispatchAttackSpike');
+        });
+
+        app(AttackSpikeAlertService::class)->evaluate($domain);
+
+        $this->assertSame(AttackSpikeAlert::STATUS_PENDING, AttackSpikeAlert::query()->sole()->status);
+    }
+
+    public function test_pending_high_delivery_does_not_block_a_new_critical_escalation(): void
+    {
+        $company = $this->createCompany(Company::TYPE_CLIENT);
+        $domain = $this->createDomain($company, 'escalation-after-failure.example.test');
+        $this->createThreatEvents($domain, 10, $this->now->subMinutes(5));
+
+        $this->mock(SecurityAlertDispatcher::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('dispatchAttackSpike')
+                ->once()
+                ->withArgs(fn (Company $company, SecurityAlertNotification $notification, array $delivered): bool => $notification->severity === 'HIGH')
+                ->andReturn(['delivered' => [], 'failed' => ['1:email']]);
+            $mock->shouldReceive('dispatchAttackSpike')
+                ->once()
+                ->withArgs(fn (Company $company, SecurityAlertNotification $notification, array $delivered): bool => $notification->severity === 'CRITICAL')
+                ->andReturn(['delivered' => ['1:email'], 'failed' => []]);
+        });
+
+        $service = app(AttackSpikeAlertService::class);
+        $service->evaluate($domain, 10);
+        $this->createThreatEvents($domain, 15, $this->now->subMinutes(4), 50);
+        $service->evaluate($domain, 15);
+
+        $this->assertDatabaseHas('attack_spike_alerts', [
+            'monitored_domain_id' => $domain->id,
+            'severity' => 'HIGH',
+            'status' => AttackSpikeAlert::STATUS_PENDING,
+        ]);
+        $this->assertDatabaseHas('attack_spike_alerts', [
+            'monitored_domain_id' => $domain->id,
+            'severity' => 'CRITICAL',
+            'status' => AttackSpikeAlert::STATUS_DELIVERED,
+        ]);
     }
 
     private function genericNotification(string $domain = 'example.test'): SecurityAlertNotification

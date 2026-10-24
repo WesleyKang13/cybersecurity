@@ -34,6 +34,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::post('/dns-security/alert-settings', [DnsSecurityController::class, 'updateAlertSettings'])->name('dns-security.alert-settings');
         Route::post('/dns-security/block-ip', [DnsSecurityController::class, 'blockIp'])->name('dns-security.block-ip');
         Route::post('/dns-security/unblock-ip', [DnsSecurityController::class, 'unblockIp'])->name('dns-security.unblock-ip');
+        Route::get('/dns-security/scan-statuses', [DnsSecurityController::class, 'scanStatuses'])
+            ->name('dns-security.scan-statuses');
         Route::patch('/dns-security/{domain}', [DnsSecurityController::class, 'update'])->name('dns-security.update');
         Route::get('/dns-security/ip-lookup/{ip}', [DnsSecurityController::class, 'lookupIp'])
             ->where('ip', '.*')

@@ -22,6 +22,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -335,6 +336,44 @@ class DnsSecurityController extends Controller
         return back()->with('success', "Security scan queued for '{$domain->domain}'.");
     }
 
+    public function scanStatuses(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'domain_ids' => ['required', 'array', 'min:1', 'max:100'],
+            'domain_ids.*' => ['integer', 'distinct'],
+        ]);
+
+        $domainIds = collect($validated['domain_ids'])
+            ->map(static fn (mixed $id): int => (int) $id)
+            ->values()
+            ->all();
+
+        $scans = MonitoredDomain::query()
+            ->where('company_id', $request->user()->company_id)
+            ->whereIn('id', $domainIds)
+            ->get([
+                'id',
+                'universal_scan_status',
+                'universal_scan_requested_at',
+                'universal_scan_started_at',
+                'universal_scan_completed_at',
+                'universal_scan_failed_at',
+                'universal_scan_error',
+            ])
+            ->map(static fn (MonitoredDomain $domain): array => [
+                'id' => $domain->id,
+                'status' => $domain->universal_scan_status,
+                'requested_at' => $domain->universal_scan_requested_at?->toIso8601String(),
+                'started_at' => $domain->universal_scan_started_at?->toIso8601String(),
+                'completed_at' => $domain->universal_scan_completed_at?->toIso8601String(),
+                'failed_at' => $domain->universal_scan_failed_at?->toIso8601String(),
+                'error' => $domain->universal_scan_error,
+            ])
+            ->values();
+
+        return response()->json(['scans' => $scans]);
+    }
+
     public function update(Request $request, MonitoredDomain $domain): RedirectResponse
     {
         $this->ensureDomainBelongsToUserCompany($request, $domain);
@@ -639,6 +678,7 @@ class DnsSecurityController extends Controller
 
             $lockedDomain->forceFill([
                 'universal_scan_status' => 'queued',
+                'universal_scan_run_id' => (string) Str::uuid(),
                 'universal_scan_requested_at' => now(),
                 'universal_scan_started_at' => null,
                 'universal_scan_completed_at' => null,
@@ -648,7 +688,8 @@ class DnsSecurityController extends Controller
 
             RunUniversalSecurityScan::dispatch(
                 (int) $lockedDomain->id,
-                (int) $lockedDomain->company_id
+                (int) $lockedDomain->company_id,
+                (string) $lockedDomain->universal_scan_run_id
             )->afterCommit();
 
             return true;

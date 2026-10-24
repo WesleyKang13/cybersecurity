@@ -29,6 +29,7 @@ class MonitoredDomain extends Model
         'auto_ban_threshold',
         'last_checked_at',
         'universal_scan_status',
+        'universal_scan_run_id',
         'universal_scan_requested_at',
         'universal_scan_started_at',
         'universal_scan_completed_at',

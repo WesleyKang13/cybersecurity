@@ -23,9 +23,17 @@ class SecurityOperationsPresentationTest extends TestCase
         $component = file_get_contents(__DIR__.'/../../resources/js/Pages/DnsSecurity/Index.jsx');
         $this->assertIsString($component);
 
-        foreach (["['queued', 'running']", 'Scanning…', 'router.reload', 'universal_scan?.error'] as $label) {
+        foreach ([
+            "['queued', 'running']",
+            'Scanning…',
+            "route('dns-security.scan-statuses')",
+            'pollScanStatuses',
+            'universalScan.error',
+        ] as $label) {
             $this->assertStringContainsString($label, $component);
         }
+
+        $this->assertStringNotContainsString("only: ['domains', 'recentLogs']", $component);
     }
 
     public function test_threat_mitigation_ui_does_not_offer_a_duplicate_or_cross_tier_block_action(): void

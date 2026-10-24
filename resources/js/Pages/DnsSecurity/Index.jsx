@@ -24,7 +24,7 @@ import {
     ShieldCheck,
     Trash2,
 } from 'lucide-react';
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 
 const STATUS_STYLES = {
     Secure: 'border-emerald-200 bg-emerald-100 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-200',
@@ -235,6 +235,11 @@ export default function DnsSecurityIndex({
         data: null,
         error: null,
     });
+    const [scanLifecycleByDomainId, setScanLifecycleByDomainId] = useState(() => Object.fromEntries(
+        domains.map((domain) => [domain.id, domain.universal_scan || {}])
+    ));
+    const terminalScanRefreshes = useRef(new Set());
+    const dashboardRefreshInFlight = useRef(false);
 
     const addDomainForm = useForm({
         domain: '',
@@ -328,7 +333,10 @@ export default function DnsSecurityIndex({
         ...hourlyAttackVolume.map((point) => Number(point.count || 0))
     );
     const lastSyncedLabel = getRelativeSyncLabel(last_synced_at, relativeTimeNow);
-    const hasPendingUniversalScan = domains.some((domain) => ['queued', 'running'].includes(domain.universal_scan?.status));
+    const scanLifecycleForDomain = (domain) => scanLifecycleByDomainId[domain.id] ?? domain.universal_scan ?? {};
+    const pendingUniversalScanDomainIds = domains
+        .filter((domain) => ['queued', 'running'].includes(scanLifecycleForDomain(domain).status))
+        .map((domain) => domain.id);
 
     const summary = domains.reduce(
         (accumulator, domain) => {
@@ -358,28 +366,88 @@ export default function DnsSecurityIndex({
     );
 
     useEffect(() => {
-        const intervalId = window.setInterval(() => {
-            window.location.reload();
-        }, 5 * 60 * 1000);
-
-        return () => window.clearInterval(intervalId);
-    }, []);
+        setScanLifecycleByDomainId(Object.fromEntries(
+            domains.map((domain) => [domain.id, domain.universal_scan || {}])
+        ));
+    }, [domains]);
 
     useEffect(() => {
-        if (!hasPendingUniversalScan) {
+        if (pendingUniversalScanDomainIds.length === 0) {
             return undefined;
         }
 
-        const timeoutId = window.setTimeout(() => {
-            router.reload({
-                only: ['domains', 'recentLogs'],
-                preserveScroll: true,
-                preserveState: true,
-            });
-        }, 3000);
+        let cancelled = false;
+        let pollInFlight = false;
 
-        return () => window.clearTimeout(timeoutId);
-    }, [hasPendingUniversalScan, domains]);
+        const pollScanStatuses = async () => {
+            if (pollInFlight || dashboardRefreshInFlight.current) {
+                return;
+            }
+
+            pollInFlight = true;
+
+            try {
+                const query = new URLSearchParams();
+                pendingUniversalScanDomainIds.forEach((domainId) => query.append('domain_ids[]', domainId));
+                const response = await fetch(`${route('dns-security.scan-statuses')}?${query.toString()}`, {
+                    headers: {
+                        Accept: 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                    },
+                    credentials: 'same-origin',
+                });
+
+                if (!response.ok || cancelled) {
+                    return;
+                }
+
+                const payload = await response.json();
+                const scans = Array.isArray(payload.scans) ? payload.scans : [];
+                let shouldRefreshDashboard = false;
+                const pendingIds = new Set(pendingUniversalScanDomainIds);
+
+                scans.forEach((scan) => {
+                    if (!pendingIds.has(scan.id) || !['completed', 'failed'].includes(scan.status)) {
+                        return;
+                    }
+
+                    const scanKey = `${scan.id}:${scan.requested_at || scan.started_at || scan.status}`;
+
+                    if (!terminalScanRefreshes.current.has(scanKey)) {
+                        terminalScanRefreshes.current.add(scanKey);
+                        shouldRefreshDashboard = true;
+                    }
+                });
+
+                setScanLifecycleByDomainId((current) => ({
+                    ...current,
+                    ...Object.fromEntries(scans.map((scan) => [scan.id, scan])),
+                }));
+
+                if (shouldRefreshDashboard && !dashboardRefreshInFlight.current) {
+                    dashboardRefreshInFlight.current = true;
+                    router.reload({
+                        only: ['domains', 'recentLogs', 'recentThreatLogs', 'activeAccessRules', 'threatAnalytics', 'last_synced_at'],
+                        preserveScroll: true,
+                        preserveState: true,
+                        onFinish: () => {
+                            dashboardRefreshInFlight.current = false;
+                        },
+                    });
+                }
+            } finally {
+                pollInFlight = false;
+            }
+        };
+
+        pollScanStatuses();
+        const intervalId = window.setInterval(pollScanStatuses, 3000);
+
+        return () => {
+            cancelled = true;
+            window.clearInterval(intervalId);
+        };
+    }, [pendingUniversalScanDomainIds.join(',')]);
 
     useEffect(() => {
         const intervalId = window.setInterval(() => {
@@ -876,7 +944,8 @@ export default function DnsSecurityIndex({
                                         {domains.map((domain) => {
                                             const statusLabel = normalizeStatusLabel(domain.overall_health_status);
                                             const statusStyle = STATUS_STYLES[statusLabel] || STATUS_STYLES.Secure;
-                                            const scanStatus = domain.universal_scan?.status;
+                                            const universalScan = scanLifecycleForDomain(domain);
+                                            const scanStatus = universalScan.status;
                                             const isScanning = scanningDomainId === domain.id || ['queued', 'running'].includes(scanStatus);
                                             const isDeleting = deletingDomainId === domain.id;
                                             const isExpanded = Boolean(expandedDomains[domain.id]);
@@ -980,7 +1049,7 @@ export default function DnsSecurityIndex({
 
                                                     {scanStatus === 'failed' ? (
                                                         <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-800 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-100">
-                                                            {domain.universal_scan?.error || 'The most recent scan failed. Try again.'}
+                                                            {universalScan.error || 'The most recent scan failed. Try again.'}
                                                         </div>
                                                     ) : null}
 

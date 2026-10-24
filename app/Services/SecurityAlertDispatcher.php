@@ -22,37 +22,59 @@ class SecurityAlertDispatcher
             return;
         }
 
-        $eligibleRoles = User::rolesForCompany($company);
-
-        if ($eligibleRoles === []) {
-            return;
-        }
-
-        $users = $company->users()
-            ->whereIn('role', $eligibleRoles)
-            ->where(function ($query): void {
-                $query
-                    ->where('security_alert_email_enabled', true)
-                    ->orWhere('security_alert_slack_enabled', true)
-                    ->orWhere('security_alert_discord_enabled', true)
-                    ->orWhere('security_alert_telegram_enabled', true);
-            })
-            ->orderBy('id')
-            ->get();
-
-        foreach ($users as $user) {
+        foreach ($this->eligibleAlertUsers($company) as $user) {
             $this->dispatchForUser($user, $notification);
         }
+    }
+
+    /**
+     * Deliver an attack-spike alert and report each channel outcome. This is
+     * intentionally separate from dispatch() so existing alert types keep
+     * their current best-effort delivery behavior.
+     *
+     * @param  list<string>  $alreadyDeliveredChannels
+     * @return array{delivered: list<string>, failed: list<string>}
+     */
+    public function dispatchAttackSpike(
+        Company $company,
+        SecurityAlertNotification $notification,
+        array $alreadyDeliveredChannels = []
+    ): array {
+        if ($company->status !== Company::STATUS_ACTIVE) {
+            return ['delivered' => [], 'failed' => []];
+        }
+
+        $delivered = array_fill_keys($alreadyDeliveredChannels, true);
+        $newlyDelivered = [];
+        $failed = [];
+
+        foreach ($this->eligibleAlertUsers($company) as $user) {
+            foreach ($this->configuredChannels($user) as $channel) {
+                $deliveryKey = "{$user->id}:{$channel}";
+
+                if (isset($delivered[$deliveryKey])) {
+                    continue;
+                }
+
+                if ($this->dispatchAttackSpikeChannel($user, $notification, $channel)) {
+                    $delivered[$deliveryKey] = true;
+                    $newlyDelivered[] = $deliveryKey;
+                } else {
+                    $failed[] = $deliveryKey;
+                }
+            }
+        }
+
+        return [
+            'delivered' => array_values(array_unique($newlyDelivered)),
+            'failed' => array_values(array_unique($failed)),
+        ];
     }
 
     private function dispatchForUser(User $user, SecurityAlertNotification $notification): void
     {
         if ($user->security_alert_email_enabled && filled($user->email)) {
-            try {
-                $user->notify($notification);
-            } catch (Throwable $e) {
-                Log::warning("Security alert email failed for user {$user->id}: {$e->getMessage()}");
-            }
+            $this->sendEmail($user, $notification);
         }
 
         if ($user->security_alert_slack_enabled && filled($user->security_alert_slack_webhook_url)) {
@@ -87,10 +109,81 @@ class SecurityAlertDispatcher
         }
     }
 
+    private function dispatchAttackSpikeChannel(
+        User $user,
+        SecurityAlertNotification $notification,
+        string $channel
+    ): bool {
+        return match ($channel) {
+            'email' => $this->sendEmail($user, $notification),
+            'slack' => $this->postWebhook(
+                url: (string) $user->security_alert_slack_webhook_url,
+                payload: $notification->toSlackPayload(),
+                channel: 'Slack',
+                userId: $user->id
+            ),
+            'discord' => $this->postWebhook(
+                url: (string) $user->security_alert_discord_webhook_url,
+                payload: $notification->toDiscordPayload(),
+                channel: 'Discord',
+                userId: $user->id
+            ),
+            'telegram' => $this->postTelegram(
+                botToken: (string) $user->security_alert_telegram_bot_token,
+                chatId: (string) $user->security_alert_telegram_chat_id,
+                payload: $notification->toTelegramPayload(),
+                userId: $user->id
+            ),
+        };
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function configuredChannels(User $user): array
+    {
+        $channels = [];
+
+        if ($user->security_alert_email_enabled && filled($user->email)) {
+            $channels[] = 'email';
+        }
+
+        if ($user->security_alert_slack_enabled && filled($user->security_alert_slack_webhook_url)) {
+            $channels[] = 'slack';
+        }
+
+        if ($user->security_alert_discord_enabled && filled($user->security_alert_discord_webhook_url)) {
+            $channels[] = 'discord';
+        }
+
+        if (
+            $user->security_alert_telegram_enabled
+            && filled($user->security_alert_telegram_bot_token)
+            && filled($user->security_alert_telegram_chat_id)
+        ) {
+            $channels[] = 'telegram';
+        }
+
+        return $channels;
+    }
+
+    private function sendEmail(User $user, SecurityAlertNotification $notification): bool
+    {
+        try {
+            $user->notify($notification);
+
+            return true;
+        } catch (Throwable $e) {
+            Log::warning("Security alert email failed for user {$user->id}: {$e->getMessage()}");
+
+            return false;
+        }
+    }
+
     /**
      * @param  array<string, mixed>  $payload
      */
-    private function postWebhook(string $url, array $payload, string $channel, int $userId): void
+    private function postWebhook(string $url, array $payload, string $channel, int $userId): bool
     {
         try {
             Http::timeout(self::TIMEOUT_SECONDS)
@@ -98,17 +191,21 @@ class SecurityAlertDispatcher
                 ->acceptJson()
                 ->post($url, $payload)
                 ->throw();
+
+            return true;
         } catch (ConnectionException $e) {
             Log::warning("Security alert {$channel} webhook timed out for user {$userId}: {$e->getMessage()}");
         } catch (Throwable $e) {
             Log::warning("Security alert {$channel} webhook failed for user {$userId}: {$e->getMessage()}");
         }
+
+        return false;
     }
 
     /**
      * @param  array<string, mixed>  $payload
      */
-    private function postTelegram(string $botToken, string $chatId, array $payload, int $userId): void
+    private function postTelegram(string $botToken, string $chatId, array $payload, int $userId): bool
     {
         try {
             Http::timeout(self::TIMEOUT_SECONDS)
@@ -119,10 +216,35 @@ class SecurityAlertDispatcher
                     'text' => (string) ($payload['text'] ?? ''),
                 ])
                 ->throw();
+
+            return true;
         } catch (ConnectionException $e) {
             Log::warning("Security alert Telegram notification timed out for user {$userId}: {$e->getMessage()}");
         } catch (Throwable $e) {
             Log::warning("Security alert Telegram notification failed for user {$userId}: {$e->getMessage()}");
         }
+
+        return false;
+    }
+
+    private function eligibleAlertUsers(Company $company)
+    {
+        $eligibleRoles = User::rolesForCompany($company);
+
+        if ($eligibleRoles === []) {
+            return collect();
+        }
+
+        return $company->users()
+            ->whereIn('role', $eligibleRoles)
+            ->where(function ($query): void {
+                $query
+                    ->where('security_alert_email_enabled', true)
+                    ->orWhere('security_alert_slack_enabled', true)
+                    ->orWhere('security_alert_discord_enabled', true)
+                    ->orWhere('security_alert_telegram_enabled', true);
+            })
+            ->orderBy('id')
+            ->get();
     }
 }
