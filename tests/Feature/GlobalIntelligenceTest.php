@@ -140,6 +140,9 @@ class GlobalIntelligenceTest extends TestCase
             ->assertJsonPath('data.observations.threat_types.0.value', 'wordpress_probe')
             ->assertJsonPath('data.observations.threat_types.0.count', 2)
             ->assertJsonPath('data.block_status.classification', 'tier3_domain_block_list_entry')
+            ->assertJsonPath('data.block_status.verified_locations.0.tier', 'Tier 3')
+            ->assertJsonPath('data.block_status.verified_locations.0.source', 'Tier 3 domain block list')
+            ->assertJsonPath('data.block_status.verified_locations.0.domain', 'app-two.example.test')
             ->assertJsonPath('data.block_status.tier_3.classification', 'domain_block_list_entry')
             ->assertJsonPath('data.block_status.tier_3.domain_block_list_entries.0.domain', 'app-two.example.test')
             ->assertJsonPath('data.block_status.tier_2.status', 'not_configured')
@@ -233,20 +236,30 @@ class GlobalIntelligenceTest extends TestCase
             ->assertJsonCount(0, 'data.block_status.tier_3.domain_block_list_entries');
     }
 
-    public function test_ip_investigation_confirms_a_current_cloudflare_ip_access_rule_without_conflating_it_with_tier_three(): void
+    public function test_ip_investigation_lists_verified_locations_from_each_block_source_without_telemetry(): void
     {
         $owner = $this->createUser($this->createCompany(Company::TYPE_PLATFORM), User::ROLE_PLATFORM_OWNER);
-        $domain = $this->createDomain('edge.example.test', [
+        $cloudflareDomain = $this->createDomain('edge.example.test', [
             'infrastructure_type' => 'cloudflare',
             'is_owned' => true,
             'cloudflare_zone_id' => 'zone-123',
         ]);
+        $tier3Domain = $this->createDomain('tier-three.example.test');
+        $attackerIp = '203.0.113.99';
+
+        BlockedIp::create([
+            'ip' => $attackerIp,
+            'is_global' => true,
+            'reason' => 'Platform-wide block',
+        ]);
+        BlockedIp::create([
+            'monitored_domain_id' => $tier3Domain->id,
+            'ip' => $attackerIp,
+            'is_global' => false,
+            'reason' => 'Application-only block',
+        ]);
 
         $this->mockIpIntelligence();
-        $this->createThreatEvent($domain, '203.0.113.99', '2026-10-13 11:59:00', [
-            'threat_source' => 'firewallManaged',
-            'action_taken' => 'block',
-        ]);
         $this->mock(CloudflareIpBlockService::class, function (MockInterface $mock): void {
             $mock->shouldReceive('listAccessRules')->once()->with('zone-123')->andReturn([
                 'success' => true,
@@ -261,12 +274,52 @@ class GlobalIntelligenceTest extends TestCase
         });
 
         $this->actingAs($owner)
-            ->getJson(route('admin.ip-intelligence', '203.0.113.99'))
+            ->getJson(route('admin.ip-intelligence', $attackerIp))
             ->assertOk()
             ->assertJsonPath('data.block_status.classification', 'cloudflare_ip_access_rule_active')
             ->assertJsonPath('data.block_status.tier_2.status', 'active')
-            ->assertJsonPath('data.block_status.tier_2.active_ip_access_rules.0.domain', $domain->domain)
-            ->assertJsonPath('data.block_status.tier_3.classification', 'not_listed');
+            ->assertJsonPath('data.block_status.tier_2.active_ip_access_rules.0.domain', $cloudflareDomain->domain)
+            ->assertJsonCount(3, 'data.block_status.verified_locations')
+            ->assertJsonPath('data.block_status.verified_locations.0.tier', 'Tier 2')
+            ->assertJsonPath('data.block_status.verified_locations.0.source', 'Cloudflare IP Access Rule')
+            ->assertJsonPath('data.block_status.verified_locations.0.domain', $cloudflareDomain->domain)
+            ->assertJsonPath('data.block_status.verified_locations.0.rule_id', 'rule-123')
+            ->assertJsonPath('data.block_status.verified_locations.1.tier', 'Tier 3')
+            ->assertJsonPath('data.block_status.verified_locations.1.source', 'Tier 3 global block list')
+            ->assertJsonPath('data.block_status.verified_locations.1.domain', null)
+            ->assertJsonPath('data.block_status.verified_locations.2.source', 'Tier 3 domain block list')
+            ->assertJsonPath('data.block_status.verified_locations.2.domain', $tier3Domain->domain);
+    }
+
+    public function test_ip_investigation_does_not_treat_a_reported_block_as_a_verified_location(): void
+    {
+        $owner = $this->createUser($this->createCompany(Company::TYPE_PLATFORM), User::ROLE_PLATFORM_OWNER);
+        $domain = $this->createDomain('observed-edge.example.test', [
+            'infrastructure_type' => 'cloudflare',
+            'is_owned' => true,
+            'cloudflare_zone_id' => 'zone-456',
+        ]);
+        $attackerIp = '203.0.113.98';
+
+        $this->mockIpIntelligence();
+        $this->createThreatEvent($domain, $attackerIp, '2026-10-13 11:59:00', [
+            'threat_source' => 'firewallManaged',
+            'action_taken' => 'block',
+        ]);
+        $this->mock(CloudflareIpBlockService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('listAccessRules')->once()->with('zone-456')->andReturn([
+                'success' => true,
+                'message' => 'Access rules loaded successfully.',
+                'rules' => [],
+            ]);
+        });
+
+        $this->actingAs($owner)
+            ->getJson(route('admin.ip-intelligence', $attackerIp))
+            ->assertOk()
+            ->assertJsonPath('data.block_status.classification', 'no_known_block')
+            ->assertJsonPath('data.block_status.tier_2.status', 'not_active')
+            ->assertJsonCount(0, 'data.block_status.verified_locations');
     }
 
     public function test_global_intelligence_dashboard_returns_attacker_rollups_instead_of_event_rows(): void

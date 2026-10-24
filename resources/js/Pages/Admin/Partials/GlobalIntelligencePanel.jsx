@@ -32,7 +32,7 @@ const BLOCK_STATUSES = {
         classes: 'border-gray-300 bg-gray-100 text-gray-700',
     },
     no_known_block: {
-        label: 'No known block',
+        label: 'No verified block location',
         classes: 'border-emerald-200 bg-emerald-50 text-emerald-800',
     },
 };
@@ -129,6 +129,9 @@ export default function GlobalIntelligencePanel({ topAttackers = [] }) {
     const intelligence = investigation.data;
     const observations = intelligence?.observations;
     const blockStatus = intelligence?.block_status;
+    const verifiedBlockLocations = Array.isArray(blockStatus?.verified_locations)
+        ? blockStatus.verified_locations
+        : [];
 
     return (
         <div className="space-y-6">
@@ -209,30 +212,43 @@ export default function GlobalIntelligencePanel({ topAttackers = [] }) {
                             <IntelligenceField label="Mobile network">{intelligence.mobile ? 'Yes' : 'No'}</IntelligenceField>
                         </dl>
 
-                        <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                            <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-950">
-                                <p className="font-semibold">Tier 2 · Cloudflare</p>
-                                {blockStatus?.tier_2?.status === 'active' ? (
-                                    <p className="mt-1">Confirmed active IP Access Rule for {blockStatus.tier_2.active_ip_access_rules.map((rule) => rule.domain).join(', ')}.</p>
-                                ) : blockStatus?.tier_2?.status === 'not_active' ? (
-                                    <p className="mt-1">No active IP Access Rule was found in the {blockStatus.tier_2.checked_domains?.length || 0} synced Cloudflare zone(s).</p>
-                                ) : blockStatus?.tier_2?.status === 'unknown' ? (
-                                    <p className="mt-1">Unknown / not synced. Cloudflare rule status could not be verified for {blockStatus.tier_2.unavailable_domains?.map((domain) => domain.domain).join(', ') || 'one or more configured zones'}.</p>
-                                ) : (
-                                    <p className="mt-1">No Cloudflare-backed domain associated with this IP’s telemetry is available to verify.</p>
-                                )}
+                        <section className="mt-4 overflow-hidden rounded-xl border border-gray-200 bg-white">
+                            <div className="border-b border-gray-100 bg-gray-50 px-4 py-3">
+                                <h5 className="text-sm font-semibold text-gray-900">Verified Block Locations</h5>
+                                <p className="mt-1 text-xs text-gray-500">Only active Cloudflare rules and stored Tier 3 block-list entries appear here.</p>
                             </div>
-                            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-                                <p className="font-semibold">Tier 3 · local client enforcement</p>
-                                {blockStatus?.tier_3?.global_block_list_entry ? (
-                                    <p className="mt-1">Published on the Tier 3 global block list. {blockStatus.tier_3.enforcement_note}</p>
-                                ) : blockStatus?.tier_3?.domain_block_list_entries?.length > 0 ? (
-                                    <p className="mt-1">Published for {blockStatus.tier_3.domain_block_list_entries.map((block) => block.domain).join(', ')}. {blockStatus.tier_3.enforcement_note}</p>
-                                ) : (
-                                    <p className="mt-1">No Tier 3 block-list entry is recorded for this IP.</p>
-                                )}
-                            </div>
-                        </div>
+
+                            {verifiedBlockLocations.length > 0 ? (
+                                <ul className="divide-y divide-gray-100">
+                                    {verifiedBlockLocations.map((location, index) => (
+                                        <li key={`${location.tier}-${location.source}-${location.domain_id || 'global'}-${location.rule_id || index}`} className="px-4 py-3 text-sm">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold ${location.tier === 'Tier 2' ? 'border-indigo-200 bg-indigo-50 text-indigo-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                                                    {location.tier}
+                                                </span>
+                                                <span className="font-semibold text-gray-900">{location.source}</span>
+                                            </div>
+                                            <p className="mt-1 text-gray-700">
+                                                {location.domain ? `Domain: ${location.domain}` : 'Scope: all Tier 3 applications'}
+                                                {location.rule_id ? ` · Rule ID: ${location.rule_id}` : ''}
+                                            </p>
+                                            {location.tier === 'Tier 3' ? (
+                                                <p className="mt-1 text-xs text-gray-500">Published block-list entry; client-side enforcement is not confirmed by this platform.</p>
+                                            ) : null}
+                                        </li>
+                                    ))}
+                                </ul>
+                            ) : (
+                                <div className="px-4 py-4 text-sm text-gray-600">
+                                    <p>No verified block locations were found for this IP.</p>
+                                    {blockStatus?.tier_2?.status === 'unknown' ? (
+                                        <p className="mt-1 text-xs text-gray-500">
+                                            Cloudflare rule status could not be verified for {blockStatus.tier_2.unavailable_domains?.map((domain) => domain.domain).join(', ') || 'one or more configured zones'}; those zones are not shown as blocked.
+                                        </p>
+                                    ) : null}
+                                </div>
+                            )}
+                        </section>
                     </section>
 
                     <section className="space-y-4">

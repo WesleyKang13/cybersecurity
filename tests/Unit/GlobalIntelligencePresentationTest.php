@@ -51,11 +51,16 @@ class GlobalIntelligencePresentationTest extends TestCase
             'Tier 3 global block-list entry',
             'Tier 3 domain block-list entry',
             'Cloudflare status not synced',
-            'Unknown / not synced',
+            'Verified Block Locations',
+            'No verified block locations were found for this IP.',
+            'Only active Cloudflare rules and stored Tier 3 block-list entries appear here.',
+            'those zones are not shown as blocked',
             'Recent attacker activity',
             'unclassified',
         ] as $label) {
             $this->assertStringContainsString($label, $this->component);
         }
+
+        $this->assertStringNotContainsString('blocked somewhere', strtolower($this->component));
     }
 }

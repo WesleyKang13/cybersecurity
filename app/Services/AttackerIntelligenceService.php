@@ -166,6 +166,7 @@ class AttackerIntelligenceService
 
         return [
             'classification' => $this->overallBlockClassification($blocks, $cloudflareStatus),
+            'verified_locations' => $this->verifiedBlockLocations($blocks, $cloudflareStatus),
             'tier_3' => [
                 'classification' => $this->tier3BlockClassification($blocks),
                 'global_block_list_entry' => $blocks->contains('is_global', true),
@@ -232,14 +233,7 @@ class AttackerIntelligenceService
      */
     private function cloudflareIpAccessRuleStatus(string $ipAddress): array
     {
-        $observedDomainIds = SecurityThreatLog::query()
-            ->where('attacker_ip', $ipAddress)
-            ->whereNotNull('monitored_domain_id')
-            ->distinct()
-            ->pluck('monitored_domain_id');
-
         $domains = MonitoredDomain::query()
-            ->whereIn('id', $observedDomainIds)
             ->whereNotNull('cloudflare_zone_id')
             ->where('cloudflare_zone_id', '!=', '')
             ->where('is_owned', true)
@@ -292,6 +286,56 @@ class AttackerIntelligenceService
             'active_ip_access_rules' => $activeRules,
             'unavailable_domains' => $unavailableDomains,
         ];
+    }
+
+    /**
+     * Return only block locations confirmed by an authoritative source. Reported
+     * telemetry outcomes are observations, not proof that a block remains active.
+     *
+     * @param  Collection<int, BlockedIp>  $blocks
+     * @param  array{active_ip_access_rules: list<array{domain_id: int, domain: string, rule_id: string, created_on: string|null}>}  $cloudflareStatus
+     * @return list<array{tier: string, source: string, scope: string, domain_id: int|null, domain: string|null, rule_id: string|null, created_on: string|null}>
+     */
+    private function verifiedBlockLocations(Collection $blocks, array $cloudflareStatus): array
+    {
+        $cloudflareLocations = collect($cloudflareStatus['active_ip_access_rules'])
+            ->map(static fn (array $rule): array => [
+                'tier' => 'Tier 2',
+                'source' => 'Cloudflare IP Access Rule',
+                'scope' => 'domain',
+                'domain_id' => $rule['domain_id'],
+                'domain' => $rule['domain'],
+                'rule_id' => $rule['rule_id'],
+                'created_on' => $rule['created_on'],
+            ])
+            ->all();
+
+        $globalTier3Location = $blocks->contains('is_global', true)
+            ? [[
+                'tier' => 'Tier 3',
+                'source' => 'Tier 3 global block list',
+                'scope' => 'global',
+                'domain_id' => null,
+                'domain' => null,
+                'rule_id' => null,
+                'created_on' => null,
+            ]]
+            : [];
+
+        $domainTier3Locations = $blocks
+            ->where('is_global', false)
+            ->map(fn (BlockedIp $block): array => [
+                'tier' => 'Tier 3',
+                'source' => 'Tier 3 domain block list',
+                'scope' => 'domain',
+                'domain_id' => $block->monitored_domain_id,
+                'domain' => $block->monitoredDomain?->domain ?? 'Unknown domain',
+                'rule_id' => null,
+                'created_on' => null,
+            ])
+            ->all();
+
+        return [...$cloudflareLocations, ...$globalTier3Location, ...$domainTier3Locations];
     }
 
     /**
