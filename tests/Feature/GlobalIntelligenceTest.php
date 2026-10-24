@@ -244,6 +244,11 @@ class GlobalIntelligenceTest extends TestCase
             'is_owned' => true,
             'cloudflare_zone_id' => 'zone-123',
         ]);
+        $unavailableCloudflareDomain = $this->createDomain('unavailable-edge.example.test', [
+            'infrastructure_type' => 'cloudflare',
+            'is_owned' => true,
+            'cloudflare_zone_id' => 'zone-unavailable',
+        ]);
         $tier3Domain = $this->createDomain('tier-three.example.test');
         $attackerIp = '203.0.113.99';
 
@@ -271,6 +276,11 @@ class GlobalIntelligenceTest extends TestCase
                     'created_on' => '2026-10-13T12:00:00Z',
                 ]],
             ]);
+            $mock->shouldReceive('listAccessRules')->once()->with('zone-unavailable')->andReturn([
+                'success' => false,
+                'message' => 'Cloudflare did not respond within 5 seconds.',
+                'rules' => [],
+            ]);
         });
 
         $this->actingAs($owner)
@@ -279,6 +289,7 @@ class GlobalIntelligenceTest extends TestCase
             ->assertJsonPath('data.block_status.classification', 'cloudflare_ip_access_rule_active')
             ->assertJsonPath('data.block_status.tier_2.status', 'active')
             ->assertJsonPath('data.block_status.tier_2.active_ip_access_rules.0.domain', $cloudflareDomain->domain)
+            ->assertJsonPath('data.block_status.tier_2.unavailable_domains.0.domain', $unavailableCloudflareDomain->domain)
             ->assertJsonCount(3, 'data.block_status.verified_locations')
             ->assertJsonPath('data.block_status.verified_locations.0.tier', 'Tier 2')
             ->assertJsonPath('data.block_status.verified_locations.0.source', 'Cloudflare IP Access Rule')
@@ -352,6 +363,7 @@ class GlobalIntelligenceTest extends TestCase
                 ->where('top_attackers.0.total_events', 2)
                 ->where('top_attackers.0.applications_targeted', 2)
                 ->where('top_attackers.0.tier_3_status', 'global_block_list_entry')
+                ->where('top_attackers.1.tier_3_status', 'not_listed')
                 ->has('security_threat_events', 0)
                 ->has('tier_3_domains', 0)
                 ->missing('top_targeted_paths')

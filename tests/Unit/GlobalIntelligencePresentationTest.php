@@ -54,7 +54,6 @@ class GlobalIntelligencePresentationTest extends TestCase
             'Verified Block Locations',
             'No verified block locations were found for this IP.',
             'Only active Cloudflare rules and stored Tier 3 block-list entries appear here.',
-            'those zones are not shown as blocked',
             'Recent attacker activity',
             'unclassified',
         ] as $label) {
@@ -62,5 +61,22 @@ class GlobalIntelligencePresentationTest extends TestCase
         }
 
         $this->assertStringNotContainsString('blocked somewhere', strtolower($this->component));
+    }
+
+    public function test_top_attacker_tier_three_status_is_scoped_to_tier_three(): void
+    {
+        $this->assertStringContainsString('Not blocked by Tier 3', $this->component);
+        $this->assertStringContainsString('<Tier3ListStatusBadge classification={attacker.tier_3_status} />', $this->component);
+    }
+
+    public function test_cloudflare_incompleteness_warning_is_shown_independently_of_verified_locations(): void
+    {
+        foreach ([
+            'unavailableCloudflareDomains.length > 0',
+            'Cloudflare status could not be verified for',
+            'Results may be incomplete.',
+        ] as $label) {
+            $this->assertStringContainsString($label, $this->component);
+        }
     }
 }

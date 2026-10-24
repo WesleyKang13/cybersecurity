@@ -37,8 +37,33 @@ const BLOCK_STATUSES = {
     },
 };
 
+const TIER_3_LIST_STATUSES = {
+    global_block_list_entry: {
+        label: 'Tier 3 global block-list entry',
+        classes: 'border-amber-200 bg-amber-50 text-amber-800',
+    },
+    domain_block_list_entry: {
+        label: 'Tier 3 domain block-list entry',
+        classes: 'border-amber-200 bg-amber-50 text-amber-800',
+    },
+    not_listed: {
+        label: 'Not blocked by Tier 3',
+        classes: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+    },
+};
+
 function BlockStatusBadge({ classification }) {
     const status = BLOCK_STATUSES[classification] || BLOCK_STATUSES.unknown;
+
+    return (
+        <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${status.classes}`}>
+            {status.label}
+        </span>
+    );
+}
+
+function Tier3ListStatusBadge({ classification }) {
+    const status = TIER_3_LIST_STATUSES[classification] || TIER_3_LIST_STATUSES.not_listed;
 
     return (
         <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${status.classes}`}>
@@ -131,6 +156,9 @@ export default function GlobalIntelligencePanel({ topAttackers = [] }) {
     const blockStatus = intelligence?.block_status;
     const verifiedBlockLocations = Array.isArray(blockStatus?.verified_locations)
         ? blockStatus.verified_locations
+        : [];
+    const unavailableCloudflareDomains = Array.isArray(blockStatus?.tier_2?.unavailable_domains)
+        ? blockStatus.tier_2.unavailable_domains
         : [];
 
     return (
@@ -241,13 +269,17 @@ export default function GlobalIntelligencePanel({ topAttackers = [] }) {
                             ) : (
                                 <div className="px-4 py-4 text-sm text-gray-600">
                                     <p>No verified block locations were found for this IP.</p>
-                                    {blockStatus?.tier_2?.status === 'unknown' ? (
-                                        <p className="mt-1 text-xs text-gray-500">
-                                            Cloudflare rule status could not be verified for {blockStatus.tier_2.unavailable_domains?.map((domain) => domain.domain).join(', ') || 'one or more configured zones'}; those zones are not shown as blocked.
-                                        </p>
-                                    ) : null}
                                 </div>
                             )}
+
+                            {unavailableCloudflareDomains.length > 0 ? (
+                                <div role="alert" className="flex gap-2 border-t border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                                    <p>
+                                        Cloudflare status could not be verified for {unavailableCloudflareDomains.map((domain) => domain.domain).join(', ')}. Results may be incomplete.
+                                    </p>
+                                </div>
+                            ) : null}
                         </section>
                     </section>
 
@@ -345,7 +377,7 @@ export default function GlobalIntelligencePanel({ topAttackers = [] }) {
                                     <td className="px-5 py-4 text-sm font-semibold tabular-nums text-gray-900">{attacker.total_events}</td>
                                     <td className="px-5 py-4 text-sm tabular-nums text-gray-600">{attacker.applications_targeted}</td>
                                     <td className="whitespace-nowrap px-5 py-4 text-sm text-gray-600">{formatDate(attacker.most_recent_event)}</td>
-                                    <td className="px-5 py-4"><BlockStatusBadge classification={attacker.tier_3_status === 'global_block_list_entry' ? 'tier3_global_block_list_entry' : attacker.tier_3_status === 'domain_block_list_entry' ? 'tier3_domain_block_list_entry' : 'no_known_block'} /></td>
+                                    <td className="px-5 py-4"><Tier3ListStatusBadge classification={attacker.tier_3_status} /></td>
                                 </tr>
                             )) : (
                                 <tr>
